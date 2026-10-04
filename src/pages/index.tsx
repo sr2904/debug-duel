@@ -18,7 +18,6 @@
 
 import { Link } from 'react-router-dom'
 import { Seo } from '../components/Seo'
-import { APP_NAME } from '../constants'
 import { seo } from '../seo'
 
 export default function Landing() {
@@ -29,14 +28,13 @@ export default function Landing() {
         data-testid="static-landing"
         className="flex min-h-screen flex-col items-center justify-center px-6 text-center"
       >
-        <p className="mb-3 text-sm uppercase tracking-widest text-muted-foreground">{APP_NAME}</p>
+        <p className="mb-3 text-sm uppercase tracking-widest text-muted-foreground">Live 1v1 debugging battles</p>
         <h1 className="mb-4 max-w-2xl text-4xl font-bold tracking-tight text-foreground sm:text-5xl">
-          A DeepSpace app with a static front door
+          Debug Duel
         </h1>
         <p className="mb-8 max-w-md text-muted-foreground">
-          This landing page ships no auth call and no realtime connection — it's a
-          plain static page. The live app, with sign-in and synced data, lives
-          behind the link below.
+          Two developers, one buggy function, a ticking clock. First to pass every
+          hidden test wins, and spectators watch both editors live. Coming soon.
         </p>
         <Link
           to="/home"
