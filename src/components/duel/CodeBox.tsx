@@ -9,10 +9,11 @@ interface CodeBoxProps {
   testId: string
   /** Whose editor this is; tints the focus ring in their color. */
   slot: Slot
+  className?: string
 }
 
 /** A plain monospace textarea. Read-only boxes show another player's live code. */
-export function CodeBox({ value, onChange, readOnly = false, testId, slot }: CodeBoxProps) {
+export function CodeBox({ value, onChange, readOnly = false, testId, slot, className }: CodeBoxProps) {
   // Tab inserts two spaces instead of moving focus out of the editor.
   function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
     if (e.key !== 'Tab' || readOnly || !onChange) return
@@ -37,6 +38,7 @@ export function CodeBox({ value, onChange, readOnly = false, testId, slot }: Cod
       className={cn(
         'h-72 w-full resize-none rounded-md border border-border bg-background p-3 font-mono text-[13px] leading-relaxed text-foreground outline-none sm:h-80 lg:h-[26rem]',
         readOnly ? 'cursor-default text-foreground/85' : cn('focus-visible:ring-2', SLOT_STYLE[slot].focus),
+        className,
       )}
     />
   )

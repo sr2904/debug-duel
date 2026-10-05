@@ -30,6 +30,11 @@ export type DuelData = {
   endReason?: EndReason
   commentaryStatus: CommentaryStatus
   commentary?: string
+  // Written by the server at the moment the round ends, never earlier: each player's best
+  // recorded code (or their last editor contents if they never ran tests). This is what the
+  // winner screen reveals. During the round the code is visible only to its owner and spectators.
+  p1Code?: string
+  p2Code?: string
 }
 
 /** One row of `entries`: a player's live editor contents. Only that player can edit it. */
@@ -39,15 +44,21 @@ export type EntryData = {
   code: string
 }
 
-/** One row of `submissions`: a test run the server accepted. Written only by actions. */
+/** One row of `submissions`: the score of a test run the server accepted. Public (no code). Written only by actions. */
 export type SubmissionData = {
   duelId: string
   userId: string
   passed: number
   total: number
-  code: string
   at: number
 }
+
+/**
+ * One row of `solutions`: the code behind a submission. Clients can never read this
+ * collection (read: false), so a player can't fetch the opponent's code from it mid-round.
+ * Only the server reads it, for the winner reveal and the AI commentary.
+ */
+export type SolutionData = SubmissionData & { code: string }
 
 /** A hidden test: call the puzzle's function with `args`, expect `expected` (JSON-comparable). */
 export type TestCase = {

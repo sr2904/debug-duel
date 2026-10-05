@@ -8,8 +8,8 @@
  */
 
 import type { ActionTools } from 'deepspace/worker'
-import { winnerByScore } from '../shared/duel-rules'
-import type { DuelData, EndReason, SubmissionData } from '../shared/duel-types'
+import { bestRuns, winnerByScore } from '../shared/duel-rules'
+import type { DuelData, EndReason, EntryData, SolutionData } from '../shared/duel-types'
 
 export interface DuelRow {
   id: string
@@ -20,12 +20,20 @@ export interface DuelRow {
 export interface FinishStore {
   getDuel(duelId: string): Promise<DuelData | null>
   runningDuels(): Promise<DuelRow[]>
-  submissionsFor(duelId: string): Promise<SubmissionData[]>
+  /** Every recorded run with its code (the `solutions` collection: server-only). */
+  solutionsFor(duelId: string): Promise<SolutionData[]>
+  /** The players' live editor rows; only used when a player never ran their tests. */
+  entriesFor(duelId: string): Promise<EntryData[]>
   updateDuel(duelId: string, patch: Partial<DuelData>): Promise<void>
 }
 
+const MAX_REVEAL_CHARS = 20_000
+
 /**
- * Close the round. `solvedBy` is the player who just passed every test, if any.
+ * Close the round. Besides picking the winner this is the moment the code is revealed:
+ * each player's best recorded solution is copied onto the duel row, which everyone can read.
+ * (Before this, a player's code is visible only to them and to registered spectators.)
+ * `solvedBy` is the player who just passed every test, if any.
  * Returns false when it was already finished (so finishing twice is harmless).
  */
 export async function finishDuel(
@@ -39,14 +47,21 @@ export async function finishDuel(
   const duel = await store.getDuel(duelId)
   if (!duel || duel.status !== 'running') return false
 
-  const submissions = await store.submissionsFor(duelId)
+  const solutions = await store.solutionsFor(duelId)
   const players = [duel.p1Id, duel.p2Id].filter((id): id is string => !!id)
+  const best = bestRuns(solutions)
+  const entries = await store.entriesFor(duelId)
+  const revealed = (id?: string) =>
+    (id ? (best.get(id)?.code ?? entries.find((e) => e.userId === id)?.code ?? '') : '').slice(0, MAX_REVEAL_CHARS)
+
   await store.updateDuel(duelId, {
     status: 'finished',
     finishedAt: now,
     endReason: reason,
-    winnerId: solvedBy ?? winnerByScore(submissions, players),
+    winnerId: solvedBy ?? winnerByScore(solutions, players),
     commentaryStatus: 'pending',
+    p1Code: revealed(duel.p1Id),
+    p2Code: revealed(duel.p2Id),
   })
   return true
 }
@@ -80,8 +95,12 @@ export function actionStore(tools: ActionTools): FinishStore {
       const res = await tools.query<DuelData>('duels', { where: { status: 'running' }, limit: 500 })
       return res.success ? res.data.records.map((r) => ({ id: r.recordId, data: r.data })) : []
     },
-    async submissionsFor(duelId) {
-      const res = await tools.query<SubmissionData>('submissions', { where: { duelId }, limit: 500 })
+    async solutionsFor(duelId) {
+      const res = await tools.query<SolutionData>('solutions', { where: { duelId }, limit: 500 })
+      return res.success ? res.data.records.map((r) => r.data) : []
+    },
+    async entriesFor(duelId) {
+      const res = await tools.query<EntryData>('entries', { where: { duelId }, limit: 10 })
       return res.success ? res.data.records.map((r) => r.data) : []
     },
     async updateDuel(duelId, patch) {
@@ -108,8 +127,12 @@ export function cronStore(records: CronRecords): FinishStore {
       const rows = (await records.query('duels', { where: { status: 'running' }, limit: 500 })) as Envelope<DuelData>[]
       return rows.map((r) => ({ id: r.recordId, data: r.data }))
     },
-    async submissionsFor(duelId) {
-      const rows = (await records.query('submissions', { where: { duelId }, limit: 500 })) as Envelope<SubmissionData>[]
+    async solutionsFor(duelId) {
+      const rows = (await records.query('solutions', { where: { duelId }, limit: 500 })) as Envelope<SolutionData>[]
+      return rows.map((r) => r.data)
+    },
+    async entriesFor(duelId) {
+      const rows = (await records.query('entries', { where: { duelId }, limit: 10 })) as Envelope<EntryData>[]
       return rows.map((r) => r.data)
     },
     async updateDuel(duelId, patch) {

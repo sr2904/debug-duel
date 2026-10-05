@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Copy } from 'lucide-react'
 import { Button, useToast } from '@/components/ui'
 import { callAction } from '@/lib/duel/api'
+import { CopyLinkButton } from './CopyLinkButton'
 import { SLOT_STYLE, type Slot } from '@/lib/duel/slots'
 import { cn } from '@/lib/utils'
 import type { DuelData } from '../../shared/duel-types'
@@ -16,7 +16,7 @@ interface LobbyViewProps {
 
 /** Before the round: share the link, claim a player slot, and (host) start. */
 export function LobbyView({ duelId, duel, userId, isHost, nameOf }: LobbyViewProps) {
-  const { error: showError, success } = useToast()
+  const { error: showError } = useToast()
   const [busy, setBusy] = useState<'join' | 'start' | null>(null)
   const link = `${window.location.origin}/duel/${duelId}`
   const isPlayer = duel.p1Id === userId || duel.p2Id === userId
@@ -28,15 +28,6 @@ export function LobbyView({ duelId, duel, userId, isHost, nameOf }: LobbyViewPro
     const res = await callAction(kind === 'join' ? 'joinDuel' : 'startRound', { duelId })
     if (!res.success) showError(kind === 'join' ? 'Could not join' : 'Could not start', res.error)
     setBusy(null)
-  }
-
-  async function copyLink() {
-    try {
-      await navigator.clipboard.writeText(link)
-      success('Link copied')
-    } catch {
-      showError('Copy failed', 'Select the link and copy it manually.')
-    }
   }
 
   const slotCard = (slot: Slot, id: string | undefined) => {
@@ -75,9 +66,7 @@ export function LobbyView({ duelId, duel, userId, isHost, nameOf }: LobbyViewPro
         <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">Invite link</p>
         <div className="flex items-center gap-2">
           <code className="min-w-0 flex-1 truncate rounded bg-background px-3 py-2 font-mono text-xs" data-testid="duel-link">{link}</code>
-          <Button variant="outline" size="sm" onClick={copyLink}>
-            <Copy /> Copy
-          </Button>
+          <CopyLinkButton url={link} testId="copy-invite-btn" />
         </div>
       </div>
 

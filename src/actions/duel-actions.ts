@@ -8,7 +8,7 @@
 
 import type { ActionHandler, ActionResult, ActionTools } from 'deepspace/worker'
 import type { Env } from '../../worker'
-import type { DuelData, EntryData, SubmissionData } from '../shared/duel-types'
+import type { DuelData, EntryData, SolutionData, SubmissionData } from '../shared/duel-types'
 import { writeCommentary } from '../server/commentary'
 import { buildCommentaryInput } from '../server/commentary-input'
 import { SUBMIT_GRACE_MS, clampDuration } from '../shared/duel-rules'
@@ -32,11 +32,14 @@ async function loadDuel(tools: ActionTools, duelId: unknown): Promise<{ duel: Du
   return { duel: res.data.record.data }
 }
 
-/** All recorded runs for a duel, oldest first. Sorted here because tools.query defaults to newest-first. */
-async function loadSubmissions(tools: ActionTools, duelId: string): Promise<SubmissionData[]> {
-  const res = await tools.query<SubmissionData>('submissions', { where: { duelId }, limit: 500 })
+/** All recorded runs (with code) for a duel, oldest first. Sorted here because tools.query defaults to newest-first. */
+async function loadSolutions(tools: ActionTools, duelId: string): Promise<SolutionData[]> {
+  const res = await tools.query<SolutionData>('solutions', { where: { duelId }, limit: 500 })
   return res.success ? res.data.records.map((r) => r.data).sort((x, y) => x.at - y.at) : []
 }
+
+/** Spectator access to a duel's live editors is one team_members row per person (see entriesSchema). */
+const watcherRowId = (duelId: string, userId: string) => `${duelId}:${userId}`
 
 export const duelActions: Record<string, Handler> = {
   /** Lets clients correct for clock skew so everyone sees the same countdown. */
@@ -56,6 +59,8 @@ export const duelActions: Record<string, Handler> = {
     if (!slotField) return fail('Both player slots are taken')
 
     await tools.update('duels', duelId, { [slotField]: userId })
+    // A spectator who becomes a player must stop seeing the other player's editor.
+    await tools.remove('team_members', watcherRowId(duelId, userId))
     // Re-read: if two people clicked at once, only the one whose id stuck keeps the slot.
     const after = await loadDuel(tools, duelId)
     if ('error' in after || after.duel[slotField] !== userId) return fail('Someone else just took that slot')
@@ -66,6 +71,22 @@ export const duelActions: Record<string, Handler> = {
       return fail(entry.error)
     }
     return ok({ slot: slotField === 'p1Id' ? 'p1' : 'p2' })
+  },
+
+  /**
+   * Register as a spectator: grants read access to both live editors (via team_members).
+   * Players are refused, so a player can never watch their opponent's code.
+   */
+  watchDuel: async ({ userId, params, tools }) => {
+    const loaded = await loadDuel(tools, params.duelId)
+    if ('error' in loaded) return fail(loaded.error)
+    const { duel } = loaded
+    const duelId = params.duelId as string
+
+    if (isPlayer(duel, userId)) return ok({ watching: false })
+    if (duel.status === 'finished') return ok({ watching: false })
+    const res = await tools.create('team_members', { teamId: duelId, userId, status: 'active' }, watcherRowId(duelId, userId))
+    return res.success ? ok({ watching: true }) : fail(res.error)
   },
 
   /** Host only. Picks a puzzle and starts the server clock. */
@@ -146,15 +167,12 @@ export const duelActions: Record<string, Handler> = {
       return fail('Time is up')
     }
 
-    const saved = await tools.create<SubmissionData>('submissions', {
-      duelId,
-      userId,
-      passed: passedCount,
-      total: total as number,
-      code: code.slice(0, MAX_CODE_CHARS),
-      at: now,
-    })
+    // Scores are public (everyone sees "X of Y passing"); the code goes to a collection no client can read.
+    const score = { duelId, userId, passed: passedCount, total: total as number, at: now }
+    const saved = await tools.create<SubmissionData>('submissions', score)
     if (!saved.success) return fail(saved.error)
+    const kept = await tools.create<SolutionData>('solutions', { ...score, code: code.slice(0, MAX_CODE_CHARS) })
+    if (!kept.success) return fail(kept.error)
 
     const solved = passedCount === total
     if (solved) await finishDuel(actionStore(tools), duelId, 'solved', userId)
@@ -199,7 +217,7 @@ export const duelActions: Record<string, Handler> = {
     await tools.update('duels', duelId, { commentaryStatus: 'running' })
     try {
       const puzzle = getSeedPuzzle(duel.puzzleId ?? '')
-      const submissions = await loadSubmissions(tools, duelId)
+      const solutions = await loadSolutions(tools, duelId)
       const names: Record<string, string> = {}
       for (const id of [duel.p1Id, duel.p2Id]) {
         if (!id) continue
@@ -207,7 +225,7 @@ export const duelActions: Record<string, Handler> = {
         const user = await tools.get('users', id)
         if (user.success) names[id] = String((user.data.record.data as { name?: string }).name ?? '')
       }
-      const input = puzzle ? buildCommentaryInput({ duel, puzzle, submissions, names }) : null
+      const input = puzzle ? buildCommentaryInput({ duel, puzzle, solutions, names }) : null
       if (!input) {
         await tools.update('duels', duelId, { commentaryStatus: 'none' })
         return ok({ status: 'none' })

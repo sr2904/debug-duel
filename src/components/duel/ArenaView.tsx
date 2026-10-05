@@ -1,4 +1,4 @@
-import type { RecordData } from 'deepspace'
+import { useQuery, type RecordData } from 'deepspace'
 import { Button } from '@/components/ui'
 import { bestRuns } from '../../shared/duel-rules'
 import type { DuelData, EntryData, SubmissionData } from '../../shared/duel-types'
@@ -7,13 +7,13 @@ import type { Slot } from '@/lib/duel/slots'
 import type { Activity } from '@/lib/duel/types'
 import { Countdown } from './Countdown'
 import { CodeBox } from './CodeBox'
+import { LockedPanel } from './LockedPanel'
 import { MyPanel } from './MyPanel'
 import { PlayerColumn } from './PlayerColumn'
 
 interface ArenaViewProps {
   duelId: string
   duel: DuelData
-  entries: RecordData<EntryData>[]
   submissions: RecordData<SubmissionData>[]
   userId: string
   isHost: boolean
@@ -28,10 +28,15 @@ interface ArenaViewProps {
  * Phones: the timer first, your own editor next (spectators see player 1 then 2), stacked.
  */
 export function ArenaView(props: ArenaViewProps) {
-  const { duelId, duel, entries, submissions, userId, isHost, nameOf, activityOf, setMyActivity, now } = props
+  const { duelId, duel, submissions, userId, isHost, nameOf, activityOf, setMyActivity, now } = props
+  // The editors are subscribed to HERE, not in DuelRoom, so the subscription starts only after the
+  // viewer's access was settled (spectators register first; see DuelRoom). The server decides which
+  // rows come back: a player gets only their own, a registered spectator gets both.
+  const entries = useQuery<EntryData>('entries', { where: { duelId } }).records
   const best = bestRuns(submissions.map((s) => s.data))
   const total = duel.testCount ?? 0
   const iAmPlayer2 = duel.p2Id === userId
+  const iAmPlayer = duel.p1Id === userId || iAmPlayer2
   // Small-screen order only; on large screens the DOM order (p1, center, p2) applies.
   const mobileOrder: Record<Slot, string> = iAmPlayer2 ? { 1: 'max-lg:order-3', 2: 'max-lg:order-2' } : { 1: 'max-lg:order-2', 2: 'max-lg:order-3' }
 
@@ -55,8 +60,12 @@ export function ArenaView(props: ArenaViewProps) {
       >
         {isMe && entry ? (
           <MyPanel duelId={duelId} entryId={entry.recordId} slot={slot} savedCode={entry.data.code} setActivity={setMyActivity} />
+        ) : iAmPlayer ? (
+          // A player never sees the opponent's code during the round. The server doesn't send it
+          // either (entries are readable only by their owner and registered spectators).
+          <LockedPanel slot={slot} />
         ) : (
-          // Opponent and spectator view: read-only, follows the owner's saved edits live.
+          // Spectators: read-only, follows the player's saved edits live.
           <CodeBox value={entry?.data.code ?? ''} readOnly testId="watch-editor" slot={slot} />
         )}
       </PlayerColumn>

@@ -243,3 +243,58 @@ Shashwat ran the duel by hand: Host (7/7) beat Alice (6/7) and the winner screen
 - [ ] **Bug 2:** create a **1 minute** duel, get two players in, start it, then close **every** browser tab (host and players). Wait about 2 minutes and open `/home` in a fresh tab: the duel shows **Finished** with a winner (or **Draw** if nobody ran tests). Needs the dev server running the whole time.
 - [ ] **Bug 3:** play a round where a player runs their **unfixed** code first, then fixes it and passes 7/7, while the other stays at a lower score. The commentary should match the cards: right winner, right scores, no tie or tiebreaker, and the winner's described fix is the one they actually submitted last.
 - [ ] Look at the lobby, the room as a player, as a spectator, on a phone-width window (browser devtools, about 390 px wide), and the winner screen.
+
+
+---
+
+## Manual testing round 2 (2026-10-05): bug 4, website improvements
+
+### Verified by Shashwat (manual testing)
+- **Permissions hold:** players cannot edit each other's code.
+- **Multiple test runs work:** wrong code shows failures, the corrected code wins, and the winner screen appears for both players.
+
+### BUG 4: Players could see each other's code live (found by Shashwat in manual testing)
+- **Symptom:** during a round a player could watch the opponent's editor and copy their fix.
+- **Cause:** my own design choice. Phase 3 deliberately made every editor readable by everyone (`entries` had `read: true`) because spectators needed to watch both; I never separated "spectator" from "the other player", and the opponent is just another signed-in member.
+- **Decision: enforce on the server, not only in the UI.** DeepSpace's permission system can do this, so a UI-only "blur" (which a player could undo in the browser devtools or by reading the WebSocket) was not acceptable.
+- **How (all in `src/schemas/duel-schemas.ts` and `src/actions/duel-actions.ts`):**
+  - **`entries` now uses `read: 'team'` with `teamField: 'duelId'`.** A row is readable only by its owner or by someone listed in a `team_members` row for that duel. The Durable Object filters rows *before* sending them, so a player's browser never receives the opponent's entry.
+  - **Spectators register through a `watchDuel` action** which writes one `team_members` row (`${duelId}:${userId}`) for the caller. Clients cannot read or write `team_members`, so nobody can enroll themselves. **Players are refused** (`watching: false`), so a player can't register as a spectator to get around it. Hosts who aren't playing register as watchers like anyone else.
+  - **Taking a player slot revokes watch access:** `joinDuel` deletes the joiner's `team_members` row, so a spectator who becomes a player loses the opponent's editor.
+  - **Second leak closed: `submissions` also stored each run's code** and was readable by everyone. Scores stay public (so "X of Y passing" can still be shown to the opponent), but the code moved to a new **`solutions`** collection with `read: false` for every client. Only the server reads it (reveal + AI commentary).
+  - **Reveal at the end:** when the round finishes (by a winning run, the deadline sweep, the host, or timeout) the server copies each player's *best recorded* code onto the duel row (`p1Code`, `p2Code`; falling back to their last editor contents if they never ran tests). The winner screen shows both under "Both solutions, revealed". Nothing is written to those fields before the round ends.
+- **UI:** a player sees a blurred, locked panel in place of the opponent's editor: "Code hidden until the round ends". The opponent's name, live status (typing / running tests) and "X of Y passing" stay visible for race tension. Spectators still see both editors live. The blur bars are decoration only; no real code is ever sent to that browser.
+- **A bug I introduced and fixed while doing this:** a spectator who joined *mid-round* got two editors on screen but no text. The new permission was correct (a fresh socket received both rows), but an already-open live subscription is not refreshed when someone is added to `team_members`: the SDK's resubscribe hook for that reads `record.data.UserId` (capital U), which doesn't match a `userId` column, so it never fires for our schema. Workaround (my side): the spectator registers first and the editors only subscribe after `watchDuel` has settled (`ArenaView` owns the `entries` query; `DuelRoom` gates it on `accessReady`). Worth reporting to the DeepSpace team.
+- **Tests (2 new Playwright specs + changed main spec + 4 new unit tests):**
+  - *Server enforcement over raw WebSockets:* Bob (a player) subscribing to `entries` gets exactly 1 row (his own) and none for Alice, never her recognizable secret string; `solutions` returns nothing to anyone; the public `submissions` rows have no `code` key; `team_members` is unreadable and unwritable by clients; a player calling `watchDuel` is refused and still sees only his own entry; the duel row has no `p1Code`/`p2Code` until the round ends, then both appear.
+  - A **late spectator** (opens the link mid-round) receives both live editors, including the secret.
+  - A **spectator who joins as a player** immediately stops receiving the opponent's entry.
+  - Main UI spec: the opponent's panel shows "Code hidden until the round ends" (and no read-only editor), the opponent's name and score still show; at the end all four browsers see both revealed solutions.
+  - Unit tests: the reveal copies the best (not latest) code, falls back to the live editor, reveals nothing early, and also happens through the scheduled sweep.
+- **Known limits (honest):**
+  - The app **owner/admin account (sr2904) bypasses every permission** (admins read everything) and can see both editors even while playing. Use the test accounts to see what a normal player sees.
+  - A player can still read their *own* editor from another tab. That is the point, not a leak.
+  - A player could in principle *describe* their code to the opponent out of band. Nothing in the app can stop that.
+  - The reveal shows each player's best **recorded** run, not necessarily what is in their editor at the last second (they can keep typing after the round).
+
+### Website improvements (no game-logic changes)
+1. **Landing page** (`/`, signed out): the Phase 0 placeholder is replaced by a real arena-themed page: hero line, "Start a duel" button, a 4-step how-it-works (create a duel, share the link, race to fix the bug, winner + AI commentary), two screenshots (`public/screens/`, cropped from real runs), a second call to action, and the footer. "Start a duel" goes to `/home`, which shows the sign-in prompt to signed-out visitors. It stays a **static** page: no auth request and no WebSocket (the existing smoke test for that still passes), and it is prerendered to plain HTML.
+2. **Lobby:** a tip ("Testing alone? Open the duel link in a private window and sign in with a second account.") and a friendly empty state ("The arena is empty.") with a button that focuses the name box. The dev database always has duels, so the empty state is covered by a unit test that renders the component (`EmptyArena.test.tsx`).
+3. **Duel room:** a **Copy invite link** button that becomes **Copied!** for two seconds (with a fallback for browsers that block the clipboard API). Shown in the room header once the round has started; in the lobby it sits next to the link. A Playwright test clicks it and reads the clipboard back.
+4. **Template cleanup:** the Settings page and its unused `settings` collection are deleted (the Settings nav link was already gone; a test checks there is no Settings link in the nav or account menu and that `/settings` is a 404). The brand is one shared component and reads **DEBUG/DUEL** on the landing page, the app nav (signed in or out), the 404 page, the footer, and in the page titles.
+5. **Header count:** "0 spectators" is replaced by "**2 players · 0 watching**" (players = filled slots; watching = everyone in the room who isn't one of the two players, including the host if they aren't playing).
+6. **Footer** on every page with a link to https://github.com/sr2904/debug-duel (a test checks the exact link).
+
+### Verification
+- `tsc --noEmit` clean; ESLint 0 errors, 0 warnings.
+- Unit tests: **54 passing**.
+- Playwright: **22 passing** (7 duel specs including the 2 privacy specs, 4 site specs, smoke, api, collab).
+- Built bundle checked again: no hidden test names or reference fixes in the client code.
+- Screenshots in `docs/screenshots/` are regenerated from the final UI (landing, lobby, player view with the opponent's code hidden, spectator view, mobile stacked spectator, winner screen, and the reveal).
+- **Not pushed, not deployed.** Everything is a local commit.
+
+### For Shashwat to verify (bug 4, on localhost)
+- [ ] Two windows, two accounts (e.g. Host and Alice test accounts), start a round: in each window the *other* player's panel is locked ("Code hidden until the round ends") but their status and "X of Y passing" update live.
+- [ ] A third window as a spectator (or a late spectator who opens the link mid-round) sees **both** editors updating live.
+- [ ] When the round ends, both players' code appears under "Both solutions, revealed", for everyone.
+- [ ] (Optional, deeper) open browser devtools > Network > WS on a player's window while the other types: you will not see the other player's code in any message.

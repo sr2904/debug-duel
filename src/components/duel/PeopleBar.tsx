@@ -14,14 +14,15 @@ export interface Person {
 const MAX_AVATARS = 8
 
 /** Who is in the room right now (from the presence room): a spectator count plus avatars. */
-export function PeopleBar({ people }: { people: Person[] }) {
-  const spectators = people.filter((p) => p.role === 'spectator').length
+export function PeopleBar({ people, playerCount }: { people: Person[]; playerCount: number }) {
+  // "Watching" = everyone here who is not one of the two players (spectators, and the host if they are not playing).
+  const watching = people.filter((p) => p.role !== 'player').length
   const shown = people.slice(0, MAX_AVATARS)
   const hidden = people.length - shown.length
   return (
     <div className="flex items-center gap-3" data-testid="people-bar">
       <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground" data-testid="spectator-count">
-        {spectators} {spectators === 1 ? 'spectator' : 'spectators'}
+        {playerCount} {playerCount === 1 ? 'player' : 'players'} · {watching} watching
       </span>
       <div className="flex -space-x-2">
         {shown.map((p) => (

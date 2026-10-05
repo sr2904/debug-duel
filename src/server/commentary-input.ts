@@ -8,7 +8,7 @@
  */
 
 import { bestRuns } from '../shared/duel-rules'
-import type { DuelData, SubmissionData } from '../shared/duel-types'
+import type { DuelData, SolutionData } from '../shared/duel-types'
 import type { Puzzle } from './puzzles/types'
 
 export interface PlayerFacts {
@@ -40,15 +40,16 @@ const NEVER_RAN = '(this player never ran their tests)'
 export function buildCommentaryInput(args: {
   duel: DuelData
   puzzle: Puzzle
-  submissions: SubmissionData[]
+  /** Recorded runs with their code (the server-only `solutions` collection). */
+  solutions: SolutionData[]
   names: Record<string, string>
 }): CommentaryInput | null {
-  const { duel, puzzle, submissions, names } = args
+  const { duel, puzzle, solutions, names } = args
   const ids = [duel.p1Id ?? '', duel.p2Id ?? ''] as const
   const total = duel.testCount ?? puzzle.tests.length
-  if (!submissions.some((s) => ids.includes(s.userId))) return null
+  if (!solutions.some((s) => ids.includes(s.userId))) return null
 
-  const best = bestRuns(submissions)
+  const best = bestRuns(solutions)
   const facts = (id: string, i: number): PlayerFacts => {
     const run = best.get(id)
     const code = run?.code ?? NEVER_RAN
@@ -56,7 +57,7 @@ export function buildCommentaryInput(args: {
       name: names[id] || `Player ${i + 1}`,
       bestPassed: run?.passed ?? 0,
       total,
-      runs: submissions.filter((s) => s.userId === id).length,
+      runs: solutions.filter((s) => s.userId === id).length,
       code,
       unchanged: run !== undefined && run.code.trim() === puzzle.buggyCode.trim(),
     }

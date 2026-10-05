@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useMutations, useQuery, useUserLookup, type RecordData } from 'deepspace'
+import { Lightbulb } from 'lucide-react'
 import { Button, Input, useToast } from '@/components/ui'
+import { EmptyArena } from '@/components/duel/EmptyArena'
 import { SLOT_STYLE } from '@/lib/duel/slots'
 import { cn } from '@/lib/utils'
 import { isTestDuel } from '../../../shared/duel-rules'
@@ -27,6 +29,7 @@ export default function HomePage() {
   const [title, setTitle] = useState('')
   const [durationSec, setDurationSec] = useState(300)
   const [creating, setCreating] = useState(false)
+  const titleInput = useRef<HTMLInputElement>(null)
 
   async function createDuel() {
     setCreating(true)
@@ -60,6 +63,7 @@ export default function HomePage() {
           }}
         >
           <Input
+            ref={titleInput}
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="Name your duel (optional)"
@@ -82,6 +86,13 @@ export default function HomePage() {
             Create duel
           </Button>
         </form>
+
+        <p className="flex max-w-2xl items-start gap-2 rounded-md border border-border bg-card/60 px-3 py-2.5 text-sm text-muted-foreground" data-testid="solo-tip">
+          <Lightbulb className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
+          <span>
+            <span className="font-semibold text-foreground">Testing alone?</span> Open the duel link in a private window and sign in with a second account.
+          </span>
+        </p>
       </section>
 
       <section>
@@ -89,9 +100,7 @@ export default function HomePage() {
         {status === 'loading' ? (
           <p className="text-sm text-muted-foreground">Loading…</p>
         ) : records.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-border p-8 text-center text-sm text-muted-foreground" data-testid="no-duels">
-            No duels yet. Create the first one.
-          </p>
+          <EmptyArena onStart={() => titleInput.current?.focus()} />
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2" data-testid="duel-list">
             {records.map((r) => (

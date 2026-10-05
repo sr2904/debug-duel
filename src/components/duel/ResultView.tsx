@@ -7,6 +7,7 @@ import { SLOT_STYLE, slotOf, type Slot } from '@/lib/duel/slots'
 import { cn } from '@/lib/utils'
 import { bestRuns } from '../../shared/duel-rules'
 import type { DuelData, SubmissionData } from '../../shared/duel-types'
+import { CodeBox } from './CodeBox'
 import { ProgressBar } from './ProgressBar'
 
 /** If commentary has been "running" this long after the round ended, treat it as failed. */
@@ -100,6 +101,29 @@ export function ResultView({ duel, submissions, nameOf, now }: ResultViewProps) 
         ) : (
           <p className="text-sm text-muted-foreground" data-testid="commentary-unavailable">Commentary is not available for this duel.</p>
         )}
+      </div>
+
+      {/* The reveal: the server copied each player's best code onto the duel row when the round ended. */}
+      <div className="space-y-3" data-testid="reveal">
+        <h2 className="font-mono text-[10px] uppercase tracking-[0.3em] text-primary">Both solutions, revealed</h2>
+        <div className="grid gap-3 lg:grid-cols-2">
+          {([1, 2] as const).map((slot) => {
+            const id = slot === 1 ? duel.p1Id : duel.p2Id
+            if (!id) return null
+            const runs = submissions.filter((s) => s.data.userId === id).length
+            return (
+              <div key={slot} className={cn('space-y-2 rounded-lg border-2 bg-card p-3', SLOT_STYLE[slot].border)}>
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className={cn('truncate font-mono font-black uppercase', SLOT_STYLE[slot].text)}>{nameOf(id)}</span>
+                  <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+                    {runs > 0 ? `Best run · ${best.get(id)?.passed ?? 0} of ${total}` : 'Final code · never ran tests'}
+                  </span>
+                </div>
+                <CodeBox value={(slot === 1 ? duel.p1Code : duel.p2Code) ?? ''} readOnly testId={`reveal-code-p${slot}`} slot={slot} className="h-56 sm:h-64 lg:h-72" />
+              </div>
+            )
+          })}
+        </div>
       </div>
 
       <Link to="/home" className="text-center font-mono text-sm uppercase tracking-widest text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">

@@ -87,6 +87,9 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
   await expect(viewer.page.getByTestId('spectator-note')).toBeVisible()
   await expect(viewer.page.getByTestId('join-player-btn')).toHaveCount(0)
 
+  // The header counts players and people watching clearly.
+  await expect(viewer.page.getByTestId('spectator-count')).toHaveText(/2 players · \d+ watching/)
+
   // 4. The host starts the round. Everyone flips to the arena at once, same puzzle.
   await expect(host.page.getByTestId('start-round-btn')).toBeEnabled()
   await host.page.getByTestId('start-round-btn').click()
@@ -98,6 +101,15 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
   for (const u of [bob, viewer, host]) await expect(u.page.getByTestId('puzzle-title')).toHaveText(puzzleTitle)
   const puzzle = seedPuzzles.find((p) => p.title === puzzleTitle)!
   expect(puzzle, 'puzzle shown in the room is one of the seeds').toBeTruthy()
+
+  // "Copy invite link" confirms with "Copied!" and then goes back to its label.
+  await host.context.grantPermissions(['clipboard-read', 'clipboard-write'])
+  const copyBtn = host.page.getByTestId('copy-invite-btn')
+  await expect(copyBtn).toHaveText('Copy invite link')
+  await copyBtn.click()
+  await expect(copyBtn).toHaveText('Copied!')
+  expect(await host.page.evaluate(() => navigator.clipboard.readText())).toBe(link)
+  await expect(copyBtn).toHaveText('Copy invite link', { timeout: 5_000 })
 
   // The countdown is shared: all four screens read within a couple of seconds of each other.
   const seconds = await Promise.all(
@@ -131,10 +143,15 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
   await expect
     .poll(async () => (await viewer.page.getByTestId('watch-editor').evaluateAll((els) => els.map((e) => (e as HTMLTextAreaElement).value))).some((v) => v.includes('alice was here')), { timeout: 15_000 })
     .toBe(true)
-  await expect(bob.page.getByTestId('watch-editor')).toHaveValue(new RegExp('alice was here'), { timeout: 15_000 })
 
-  // Bob cannot type into Alice's editor: it is read-only for him.
-  await expect(bob.page.getByTestId('watch-editor')).toHaveAttribute('readonly', '')
+  // Bob is her opponent, so he must NOT see her code: a locked panel, but her name, status and score stay visible.
+  const lockedForBob = bob.page.getByTestId('locked-panel')
+  await expect(lockedForBob).toBeVisible()
+  await expect(lockedForBob).toContainText('Code hidden until the round ends')
+  await expect(bob.page.getByTestId('watch-editor')).toHaveCount(0)
+  const aliceColumnForBob = bob.page.getByTestId('player-column')
+  await expect(aliceColumnForBob.getByTestId('player-name')).toHaveText('Alice')
+  await expect(aliceColumnForBob.getByTestId('player-score')).toContainText(`of ${puzzle.tests.length} passing`)
 
   // 7. Alice runs her fix. The server records it and ends the round: winner screen for everyone.
   await alice.page.getByTestId('run-tests-btn').click()
@@ -142,6 +159,12 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
     await expect(u.page.getByTestId('winner-screen')).toBeVisible({ timeout: 30_000 })
     await expect(u.page.getByTestId('winner-name')).toContainText('Alice')
     await expect(u.page.getByTestId('win-reason')).toContainText('passed every hidden test first')
+  }
+
+  // The round is over: now both players' code is revealed on the winner screen, to everyone.
+  for (const u of everyone) {
+    await expect(u.page.getByTestId('reveal-code-p1')).toHaveValue(new RegExp('alice was here'))
+    await expect(u.page.getByTestId('reveal-code-p2')).toHaveValue(puzzle.buggyCode)
   }
 
   // 8. Commentary appears for everyone, or the result stands without it if the AI call fails.
@@ -350,4 +373,90 @@ test('an expired round resolves on the server with nobody connected (scheduled s
   const duel = (await rawQuery(viewer.page, 'duels', {})).find((d) => d.recordId === duelId)!.data
   expect(duel).toMatchObject({ endReason: 'timeout' })
   expect(duel.winnerId).toBeTruthy() // Bob: 3 tests beat 1
+})
+
+test('code privacy: a player never receives the opponent\'s code, a spectator does, everyone gets it at the end', async ({ users }) => {
+  test.setTimeout(150_000)
+  const [host, alice, bob, viewer] = await users(NAMES)
+  const link = await createDuelAsHost(host.page)
+  const duelId = link.split('/').pop()!
+  for (const u of [alice, bob]) await u.page.goto(link)
+  for (const u of [alice, bob]) await expect(u.page.getByTestId('duel-room')).toBeVisible({ timeout: 20_000 })
+  const aliceId = JSON.parse(Buffer.from((await tokenFor(alice.page)).split('.')[1], 'base64url').toString()).sub as string
+  const bobId = JSON.parse(Buffer.from((await tokenFor(bob.page)).split('.')[1], 'base64url').toString()).sub as string
+  await alice.page.getByTestId('join-player-btn').click()
+  await bob.page.getByTestId('join-player-btn').click()
+  await expect(host.page.getByTestId('start-round-btn')).toBeEnabled()
+  await host.page.getByTestId('start-round-btn').click()
+  for (const u of [alice, bob]) await expect(u.page.getByTestId('duel-room')).toHaveAttribute('data-status', 'running', { timeout: 20_000 })
+
+  // Alice types something recognisable and runs her tests.
+  const SECRET = `// SECRET_ALICE_${Date.now()}`
+  await alice.page.getByTestId('my-editor').fill(SECRET)
+  await alice.page.getByTestId('run-tests-btn').click()
+  await expect(alice.page.getByTestId('test-summary')).toBeVisible({ timeout: 20_000 })
+
+  // A late spectator opens the link only now, mid-round, and still gets both live editors.
+  await viewer.page.goto(link)
+  await expect(viewer.page.getByTestId('watch-editor')).toHaveCount(2, { timeout: 20_000 })
+  await expect
+    .poll(async () => (await viewer.page.getByTestId('watch-editor').evaluateAll((els) => els.map((e) => (e as HTMLTextAreaElement).value))).some((v) => v.includes(SECRET)), { timeout: 15_000 })
+    .toBe(true)
+  const spectatorView = await rawQuery(viewer.page, 'entries', { duelId })
+  expect(spectatorView).toHaveLength(2)
+  expect(JSON.stringify(spectatorView)).toContain(SECRET)
+
+  // Bob, over a hand-written socket, receives ONLY his own entry. Alice's row never leaves the server.
+  const bobEntries = await rawQuery(bob.page, 'entries', { duelId })
+  expect(bobEntries).toHaveLength(1)
+  expect(bobEntries[0].data.userId).toBe(bobId)
+  expect(JSON.stringify(bobEntries)).not.toContain(SECRET)
+  expect(await rawQuery(bob.page, 'entries', { duelId, userId: aliceId })).toHaveLength(0)
+
+  // The code behind submissions is unreadable to every client; the public score rows carry no code.
+  expect(await rawQuery(bob.page, 'solutions', { duelId })).toHaveLength(0)
+  expect(await rawQuery(viewer.page, 'solutions', { duelId })).toHaveLength(0)
+  const scores = await rawQuery(bob.page, 'submissions', { duelId })
+  expect(scores.length).toBeGreaterThan(0) // Bob can see Alice's score...
+  for (const row of scores) expect(Object.keys(row.data)).not.toContain('code') // ...but never her code
+  // The spectator list is not readable either, so nobody can enroll themselves by writing to it.
+  expect(await rawQuery(bob.page, 'team_members', {})).toHaveLength(0)
+  expect((await rawPut(bob.page, 'team_members', `${duelId}:${bobId}`, { teamId: duelId, userId: bobId, status: 'active' })).accepted).toBe(false)
+
+  // A player cannot register as a spectator to get around it: the server refuses.
+  expect(await action(bob.page, 'watchDuel', { duelId })).toMatchObject({ success: true, data: { watching: false } })
+  expect(await rawQuery(bob.page, 'entries', { duelId })).toHaveLength(1)
+
+  // And nothing is revealed on the duel row until the round ends.
+  const before = (await rawQuery(bob.page, 'duels', {})).find((d) => d.recordId === duelId)!
+  expect(before.data.p1Code ?? '').toBe('')
+  expect(before.data.p2Code ?? '').toBe('')
+
+  // Round over: the server copies each player's best code onto the duel row, readable by everyone.
+  expect(await action(host.page, 'finishRound', { duelId })).toMatchObject({ success: true })
+  await expect(bob.page.getByTestId('reveal-code-p1')).toHaveValue(new RegExp(SECRET.replace(/[/]/g, '\\/')), { timeout: 20_000 })
+  const after = (await rawQuery(bob.page, 'duels', {})).find((d) => d.recordId === duelId)!
+  expect(after.data.p1Code).toContain(SECRET)
+})
+
+test('code privacy: a spectator who takes a player slot loses access to the opponent\'s code', async ({ users }) => {
+  test.setTimeout(120_000)
+  const [host, alice, bob] = await users(NAMES)
+  const link = await createDuelAsHost(host.page)
+  const duelId = link.split('/').pop()!
+  await alice.page.goto(link)
+  await bob.page.goto(link) // Bob arrives as a spectator and is registered to watch
+  for (const u of [alice, bob]) await expect(u.page.getByTestId('duel-room')).toBeVisible({ timeout: 20_000 })
+  const bobId = JSON.parse(Buffer.from((await tokenFor(bob.page)).split('.')[1], 'base64url').toString()).sub as string
+  await alice.page.getByTestId('join-player-btn').click()
+  await expect(alice.page.getByTestId('role-badge')).toHaveText('Player')
+
+  // As a spectator Bob can read Alice's (still empty) editor row.
+  await expect.poll(async () => (await rawQuery(bob.page, 'entries', { duelId })).length, { timeout: 15_000 }).toBe(1)
+
+  // Bob takes the second slot: his spectator access must vanish with it.
+  expect(await action(bob.page, 'joinDuel', { duelId })).toMatchObject({ success: true })
+  const bobView = await rawQuery(bob.page, 'entries', { duelId })
+  expect(bobView).toHaveLength(1)
+  expect(bobView[0].data.userId).toBe(bobId)
 })

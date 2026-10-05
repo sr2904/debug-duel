@@ -6,7 +6,8 @@
  *    changes only through server actions (join, start, finish, commentary).
  *  - entries: a player's live code. Created by the joinDuel action; only its
  *    owner can edit it, and only the `code` column.
- *  - submissions: test results. Written only by the submitResult action.
+ *  - submissions: test scores (public). solutions: the code behind them (unreadable by clients).
+ *    Both are written only by the submitResult action.
  */
 
 import type { CollectionSchema } from 'deepspace/schema'
@@ -33,6 +34,8 @@ export const duelsSchema: CollectionSchema = {
     { name: 'endReason', storage: 'text', interpretation: { kind: 'select', options: ['solved', 'timeout', 'host_ended'] } },
     { name: 'commentaryStatus', storage: 'text', interpretation: { kind: 'select', options: ['none', 'pending', 'running', 'done', 'failed'] }, default: 'none' },
     { name: 'commentary', storage: 'text', interpretation: 'plain' },
+    { name: 'p1Code', storage: 'text', interpretation: 'plain' },
+    { name: 'p2Code', storage: 'text', interpretation: 'plain' },
   ],
   ownerField: 'hostId',
   permissions: {
@@ -52,9 +55,31 @@ export const entriesSchema: CollectionSchema = {
   ],
   uniqueOn: ['duelId', 'userId'],
   ownerField: 'userId',
+  // The duel is the "team": a row is readable by its owner, or by anyone listed in
+  // team_members for that duel (spectators, registered by the watchDuel action).
+  // The Durable Object filters rows BEFORE sending, so an opponent never receives your code.
+  teamField: 'duelId',
   permissions: {
-    // Spectators and the opponent can read; only the owner can update, and only `code`.
-    member: { read: true, create: false, update: 'own', delete: false, writableFields: ['code'] },
+    member: { read: 'team', create: false, update: 'own', delete: false, writableFields: ['code'] },
+    admin: { read: true, create: true, update: true, delete: true },
+  },
+}
+
+/**
+ * Who may watch a duel's live editors. One row per spectator (recordId `${duelId}:${userId}`),
+ * written only by watchDuel and removed by joinDuel if that person takes a player slot.
+ * Clients can neither read nor write it.
+ */
+export const teamMembersSchema: CollectionSchema = {
+  name: 'team_members',
+  columns: [
+    { name: 'teamId', storage: 'text', interpretation: 'plain', required: true },
+    { name: 'userId', storage: 'text', interpretation: 'plain', required: true },
+    { name: 'status', storage: 'text', interpretation: 'plain', default: 'active' },
+  ],
+  uniqueOn: ['teamId', 'userId'],
+  permissions: {
+    member: { read: false, create: false, update: false, delete: false },
     admin: { read: true, create: true, update: true, delete: true },
   },
 }
@@ -66,12 +91,28 @@ export const submissionsSchema: CollectionSchema = {
     { name: 'userId', storage: 'text', interpretation: 'plain', required: true },
     { name: 'passed', storage: 'number', interpretation: 'plain', required: true },
     { name: 'total', storage: 'number', interpretation: 'plain', required: true },
+    { name: 'at', storage: 'number', interpretation: 'plain', required: true },
+  ],
+  permissions: {
+    // Scores are public (spectators and the opponent see "X of Y passing"). Code is NOT here: see solutions.
+    member: { read: true, create: false, update: false, delete: false },
+    admin: { read: true, create: true, update: true, delete: true },
+  },
+}
+
+/** The code behind each submission. No client can read it: the server reveals it at round end. */
+export const solutionsSchema: CollectionSchema = {
+  name: 'solutions',
+  columns: [
+    { name: 'duelId', storage: 'text', interpretation: 'plain', required: true },
+    { name: 'userId', storage: 'text', interpretation: 'plain', required: true },
+    { name: 'passed', storage: 'number', interpretation: 'plain', required: true },
+    { name: 'total', storage: 'number', interpretation: 'plain', required: true },
     { name: 'code', storage: 'text', interpretation: 'plain' },
     { name: 'at', storage: 'number', interpretation: 'plain', required: true },
   ],
   permissions: {
-    // Read-only for everyone: results come from the submitResult action alone.
-    member: { read: true, create: false, update: false, delete: false },
+    member: { read: false, create: false, update: false, delete: false },
     admin: { read: true, create: true, update: true, delete: true },
   },
 }

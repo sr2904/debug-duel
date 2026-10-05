@@ -6,8 +6,9 @@ import { callAction } from '@/lib/duel/api'
 import { slotOf } from '@/lib/duel/slots'
 import type { Activity } from '@/lib/duel/types'
 import { useServerClock } from '@/lib/duel/useServerClock'
-import type { DuelData, EntryData, SubmissionData } from '../../shared/duel-types'
+import type { DuelData, SubmissionData } from '../../shared/duel-types'
 import { ArenaView } from './ArenaView'
+import { CopyLinkButton } from './CopyLinkButton'
 import { LobbyView } from './LobbyView'
 import { PeopleBar, type Person } from './PeopleBar'
 import { ResultView } from './ResultView'
@@ -23,7 +24,6 @@ export function DuelRoom({ duelId }: { duelId: string }) {
   const { userId } = useAuth()
   const { getName, getUser } = useUserLookup()
   const duels = useQuery<DuelData>('duels')
-  const entries = useQuery<EntryData>('entries', { where: { duelId } })
   const submissions = useQuery<SubmissionData>('submissions', { where: { duelId } })
   const clock = useServerClock()
   const presence = usePresenceRoom(`duel:${duelId}`)
@@ -59,6 +59,23 @@ export function DuelRoom({ duelId }: { duelId: string }) {
     const self: Person = { userId: me, name: getName(me) ?? 'You', role: roleOf(me), slot: slotFor(me), imageUrl: getUser(me)?.imageUrl, isYou: true }
     return [self, ...others]
   }, [presence.peers, duel, me, getName, getUser])
+
+  // Anyone who is not a player asks the server for spectator access to the live editors.
+  // The server refuses players, so this can never give a player their opponent's code.
+  // The live editors are only shown once this has settled (see ArenaView), so a spectator who
+  // arrives mid-round subscribes AFTER being registered and receives both editors.
+  const watchedDuel = useRef<string | null>(null)
+  const [accessReady, setAccessReady] = useState(false)
+  useEffect(() => {
+    if (!duel || !me) return
+    if (isPlayer || duel.status === 'finished') {
+      setAccessReady(true)
+      return
+    }
+    if (watchedDuel.current === duelId) return
+    watchedDuel.current = duelId
+    void callAction('watchDuel', { duelId }).finally(() => setAccessReady(true))
+  }, [duel, me, isPlayer, duelId])
 
   // When the deadline passes, whoever notices first asks the server to close the round.
   // The server re-checks its own clock, so a client with a wrong clock can't end it early.
@@ -105,16 +122,21 @@ export function DuelRoom({ duelId }: { duelId: string }) {
           {isHost && <Badge variant="warning" data-testid="role-host">Host</Badge>}
           <Badge variant={isPlayer ? 'info' : 'secondary'} className="font-mono uppercase tracking-wider" data-testid="role-badge">{isPlayer ? 'Player' : 'Spectator'}</Badge>
         </div>
-        <PeopleBar people={people} />
+        <div className="flex flex-wrap items-center gap-3">
+          {duel.status !== 'lobby' && <CopyLinkButton url={`${window.location.origin}/duel/${duelId}`} testId="copy-invite-btn" />}
+          <PeopleBar people={people} playerCount={[duel.p1Id, duel.p2Id].filter(Boolean).length} />
+        </div>
       </div>
 
       <div>
         {duel.status === 'lobby' && <LobbyView duelId={duelId} duel={duel} userId={me} isHost={isHost} nameOf={nameOf} />}
-        {duel.status === 'running' && (
+        {duel.status === 'running' && !accessReady && (
+          <p className="p-8 text-center text-muted-foreground" data-testid="joining">Joining the duel…</p>
+        )}
+        {duel.status === 'running' && accessReady && (
           <ArenaView
             duelId={duelId}
             duel={duel}
-            entries={entries.records}
             submissions={submissions.records}
             userId={me}
             isHost={isHost}

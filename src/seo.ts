@@ -23,7 +23,7 @@
 declare const __DEEPSPACE_SITE_ORIGIN__: string | undefined
 
 export const seo = {
-  title: 'Debug Duel',
+  title: 'DEBUG/DUEL: live 1v1 debugging battles',
   description: 'Live 1v1 debugging battles: two developers race to fix the same buggy function while spectators watch.',
   /** Public origin for canonical URLs, og:url, and the sitemap — no trailing
    *  slash. Replace with the custom domain once one is attached, e.g.

@@ -5,7 +5,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import type { DuelData, SubmissionData } from '../shared/duel-types'
+import type { DuelData, SolutionData } from '../shared/duel-types'
 import { buildCommentaryInput } from './commentary-input'
 import { SYSTEM_PROMPT, buildPrompt, findContradiction } from './commentary-prompt'
 import { seedPuzzles } from './puzzles/seed-puzzles'
@@ -20,7 +20,7 @@ const duel: DuelData = {
   testCount: TOTAL, winnerId: 'host-id', endReason: 'solved', puzzleId: puzzle.id, commentaryStatus: 'pending',
 }
 const names = { 'host-id': 'Host', 'alice-id': 'Alice' }
-const run = (userId: string, passed: number, code: string, at: number): SubmissionData =>
+const run = (userId: string, passed: number, code: string, at: number): SolutionData =>
   ({ duelId: 'x', userId, passed, total: TOTAL, code, at })
 
 // Host: first an unfixed 6/7 run, then the winning 7/7 run. Alice: two runs, both 6/7 with the original code.
@@ -40,7 +40,7 @@ describe('commentary input comes from each player\'s own recorded runs', () => {
     ['shuffled', [chronological[2], chronological[0], chronological[3], chronological[1]]],
   ] as const) {
     it(`is correct when rows arrive ${label}`, () => {
-      const input = buildCommentaryInput({ duel, puzzle, submissions: [...submissions], names })!
+      const input = buildCommentaryInput({ duel, puzzle, solutions: [...submissions], names })!
       const [host, alice] = input.players
 
       expect(host).toMatchObject({ name: 'Host', bestPassed: TOTAL, total: TOTAL, runs: 2, unchanged: false })
@@ -58,26 +58,26 @@ describe('commentary input comes from each player\'s own recorded runs', () => {
   }
 
   it('returns nothing to comment on when neither player ran their tests', () => {
-    expect(buildCommentaryInput({ duel, puzzle, submissions: [], names })).toBeNull()
+    expect(buildCommentaryInput({ duel, puzzle, solutions: [], names })).toBeNull()
   })
 
   it('handles a player who never ran their tests without inventing a score', () => {
-    const input = buildCommentaryInput({ duel, puzzle, submissions: [run('host-id', TOTAL, FIXED, 1)], names })!
+    const input = buildCommentaryInput({ duel, puzzle, solutions: [run('host-id', TOTAL, FIXED, 1)], names })!
     expect(input.players[1]).toMatchObject({ name: 'Alice', bestPassed: 0, runs: 0 })
     expect(input.players[1].code).toContain('never ran')
   })
 
   it('reports a timeout win and a draw in the right words', () => {
-    const timeout = buildCommentaryInput({ duel: { ...duel, endReason: 'timeout' }, puzzle, submissions: chronological, names })!
+    const timeout = buildCommentaryInput({ duel: { ...duel, endReason: 'timeout' }, puzzle, solutions: chronological, names })!
     expect(timeout.result).toContain('time ran out')
-    const draw = buildCommentaryInput({ duel: { ...duel, winnerId: '', endReason: 'timeout' }, puzzle, submissions: [run('host-id', 0, ORIGINAL, 1)], names })!
+    const draw = buildCommentaryInput({ duel: { ...duel, winnerId: '', endReason: 'timeout' }, puzzle, solutions: [run('host-id', 0, ORIGINAL, 1)], names })!
     expect(draw.winnerName).toBeNull()
     expect(draw.result).toContain('draw')
   })
 })
 
 describe('the prompt sent to the model', () => {
-  const input = buildCommentaryInput({ duel, puzzle, submissions: [...chronological].reverse(), names })!
+  const input = buildCommentaryInput({ duel, puzzle, solutions: [...chronological].reverse(), names })!
   const prompt = buildPrompt(input)
 
   it('contains each player\'s own code and the real scores, winner and reason', () => {
@@ -104,7 +104,7 @@ describe('the prompt sent to the model', () => {
 })
 
 describe('findContradiction rejects commentary that disagrees with the record', () => {
-  const input = buildCommentaryInput({ duel, puzzle, submissions: chronological, names })!
+  const input = buildCommentaryInput({ duel, puzzle, solutions: chronological, names })!
 
   it('accepts a faithful commentary', () => {
     expect(findContradiction('Host fixed the regex to keep digits and passed 7 of 7. Alice stayed at 6/7.', input)).toBeNull()
