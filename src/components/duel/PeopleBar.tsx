@@ -1,26 +1,44 @@
-import { Badge } from '@/components/ui'
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui'
+import { SLOT_STYLE, type Slot } from '@/lib/duel/slots'
+import { cn } from '@/lib/utils'
 
 export interface Person {
   userId: string
   name: string
   role: 'host' | 'player' | 'spectator'
+  slot: Slot | null
+  imageUrl?: string
   isYou: boolean
 }
 
-/** Who is in the room right now (from the presence room). */
+const MAX_AVATARS = 8
+
+/** Who is in the room right now (from the presence room): a spectator count plus avatars. */
 export function PeopleBar({ people }: { people: Person[] }) {
   const spectators = people.filter((p) => p.role === 'spectator').length
+  const shown = people.slice(0, MAX_AVATARS)
+  const hidden = people.length - shown.length
   return (
-    <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="people-bar">
-      <span className="text-muted-foreground" data-testid="spectator-count">
+    <div className="flex items-center gap-3" data-testid="people-bar">
+      <span className="font-mono text-xs uppercase tracking-wider text-muted-foreground" data-testid="spectator-count">
         {spectators} {spectators === 1 ? 'spectator' : 'spectators'}
       </span>
-      {people.map((p) => (
-        <Badge key={p.userId} variant={p.role === 'player' ? 'info' : 'secondary'} data-testid="person">
-          {p.name}
-          {p.isYou ? ' (you)' : ''} · {p.role}
-        </Badge>
-      ))}
+      <div className="flex -space-x-2">
+        {shown.map((p) => (
+          <Avatar
+            key={p.userId}
+            data-testid="person"
+            title={`${p.name}${p.isYou ? ' (you)' : ''} · ${p.role}`}
+            className={cn('size-7 ring-2 ring-background', p.slot ? cn('ring-2', SLOT_STYLE[p.slot].ring) : p.role === 'host' ? 'ring-primary' : '')}
+          >
+            {p.imageUrl && <AvatarImage src={p.imageUrl} alt="" />}
+            <AvatarFallback className="bg-secondary font-mono text-[10px] font-bold uppercase">{p.name.slice(0, 1)}</AvatarFallback>
+          </Avatar>
+        ))}
+        {hidden > 0 && (
+          <span className="z-10 flex size-7 items-center justify-center rounded-full bg-secondary font-mono text-[10px] ring-2 ring-background">+{hidden}</span>
+        )}
+      </div>
     </div>
   )
 }

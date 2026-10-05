@@ -1,35 +1,22 @@
 /**
- * Cron task definitions — registered into the AppCronRoom DO at construction
- * time (worker.ts). The DO alarm fires `runTask(name, env)` on the schedule
- * declared here; the DO itself records executions, tracks history, and
- * pushes status to admin clients via the `/ws/cron/:roomId` WebSocket.
+ * Scheduled tasks, run by the app's CronRoom Durable Object (wired in worker.ts).
  *
- * Each task declares EITHER `intervalMinutes` (run every N minutes) OR
- * `schedule` + `timezone` (5-field cron expression). CronRoom validates
- * the config at construction time and throws on ambiguous declarations.
- *
- * Example:
- *
- *   import type { CronTask } from 'deepspace/worker'
- *   import { buildCronContext } from 'deepspace/worker'
- *
- *   export const tasks: CronTask[] = [
- *     { name: 'heartbeat', intervalMinutes: 1 },
- *     { name: 'daily-report', schedule: '0 9 * * *', timezone: 'America/New_York' },
- *   ]
- *
- *   export async function runTask(name: string, env: Env): Promise<void> {
- *     const ctx = buildCronContext(env, env.OWNER_USER_ID, `app:${env.DEEPSPACE_APP_ID}`)
- *     if (name === 'heartbeat') {
- *       // …
- *     }
- *   }
+ * `expire-duels` is what makes round completion server-authoritative: every
+ * minute it closes any running duel whose deadline has passed, whether or not
+ * a single browser is still connected. (Clients also ask the server to finish
+ * a round the instant the countdown ends, so normally the sweep finds nothing.)
  */
 
+import { buildCronContext } from 'deepspace/worker'
 import type { CronTask } from 'deepspace/worker'
+import type { Env } from '../worker'
+import { cronStore, finishExpiredDuels } from './server/duel-finish'
 
-export const tasks: CronTask[] = []
+export const tasks: CronTask[] = [{ name: 'expire-duels', intervalMinutes: 1 }]
 
-export async function runTask(_name: string, _env: unknown): Promise<void> {
-  // No-op — implement your cron tasks here. Dispatch on `_name`.
+export async function runTask(name: string, env: Env): Promise<void> {
+  if (name !== 'expire-duels') return
+  const ctx = buildCronContext(env, env.OWNER_USER_ID, `app:${env.DEEPSPACE_APP_ID}`)
+  const closed = await finishExpiredDuels(cronStore(ctx.records))
+  if (closed.length > 0) console.info(`[expire-duels] closed ${closed.length} expired duel(s)`)
 }

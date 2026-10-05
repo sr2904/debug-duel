@@ -62,6 +62,11 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
 
   // 1. The host creates a duel and gets a shareable link.
   const link = await createDuelAsHost(host.page)
+  // Test data stays out of the lobby list: the duel exists, but its `__test-` title is hidden.
+  await host.page.goto('/home')
+  await expect(host.page.getByTestId('duel-list').or(host.page.getByTestId('no-duels'))).toBeVisible({ timeout: 20_000 })
+  await expect(host.page.getByText('__test-')).toHaveCount(0)
+  await host.page.goto(link)
   await expect(host.page.getByTestId('duel-link')).toHaveText(link)
   await expect(host.page.getByTestId('role-host')).toBeVisible()
 
@@ -114,6 +119,11 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
   expect(bobSummary).not.toContain(`${puzzle.tests.length} of ${puzzle.tests.length}`)
   await expect(host.page.getByTestId('player-score').first()).toBeVisible()
 
+  // Alice also runs her unfixed code first, so she ends up with two recorded runs (partial, then perfect).
+  // The commentary must describe her winning run, not her first one.
+  await alice.page.getByTestId('run-tests-btn').click()
+  await expect(alice.page.getByTestId('test-summary')).toBeVisible({ timeout: 20_000 })
+
   // 6. Alice edits; the spectator and Bob watch her code change live.
   const marker = `// alice was here ${Date.now()}\n`
   await alice.page.getByTestId('my-editor').fill(marker + puzzle.referenceFix)
@@ -138,6 +148,9 @@ test('full duel: host + two players + spectator, winner shown to everyone', asyn
   for (const u of everyone) {
     await expect(u.page.getByTestId('commentary-text').or(u.page.getByTestId('commentary-unavailable'))).toBeVisible({ timeout: 60_000 })
   }
+  // Whatever the AI wrote must agree with the record: a winner by solving, never a tie or a tiebreaker.
+  const commentary = (await viewer.page.getByTestId('commentary-text').count()) ? await viewer.page.getByTestId('commentary-text').textContent() : ''
+  expect(commentary).not.toMatch(/\b(tie|tied|tiebreak\w*|identical)\b/i)
   console.log('commentary shown:', await viewer.page.getByTestId('commentary-text').count() === 1 ? 'AI text' : 'unavailable fallback')
 })
 
@@ -296,10 +309,45 @@ test('timeout: the round ends for everyone at the deadline and the best score wi
   await bob.page.getByTestId('run-tests-btn').click()
   await expect(bob.page.getByTestId('test-summary')).toBeVisible({ timeout: 20_000 })
 
+  // In the last 15 seconds the countdown turns red (data-urgent) for everyone.
+  for (const u of everyone) await expect(u.page.getByTestId('countdown')).toHaveAttribute('data-urgent', 'true', { timeout: 60_000 })
+
   // The server closes the round at the deadline; every screen flips together (about 60s after start).
   for (const u of everyone) {
     await expect(u.page.getByTestId('winner-screen')).toBeVisible({ timeout: 90_000 })
     await expect(u.page.getByTestId('winner-name')).toContainText('Bob')
     await expect(u.page.getByTestId('win-reason')).toContainText('best score when time ran out')
   }
+})
+
+test('an expired round resolves on the server with nobody connected (scheduled sweep)', async ({ users }) => {
+  test.setTimeout(300_000)
+  const [host, alice, bob, viewer] = await users(NAMES)
+  const link = await createDuelAsHost(host.page, 60)
+  const duelId = link.split('/').pop()!
+  await alice.page.goto('/home')
+  await bob.page.goto('/home')
+  await viewer.page.goto('/home')
+  expect(await action(alice.page, 'joinDuel', { duelId })).toMatchObject({ success: true })
+  expect(await action(bob.page, 'joinDuel', { duelId })).toMatchObject({ success: true })
+  expect(await action(host.page, 'startRound', { duelId })).toMatchObject({ success: true })
+  const testCount = (await rawQuery(viewer.page, 'duels', {})).find((d) => d.recordId === duelId)!.data.testCount
+  // Bob scores higher than Alice, then everybody who could close the round leaves.
+  expect(await action(alice.page, 'submitResult', { duelId, passed: 1, total: testCount, code: 'a' })).toMatchObject({ success: true })
+  expect(await action(bob.page, 'submitResult', { duelId, passed: 3, total: testCount, code: 'b' })).toMatchObject({ success: true })
+  await host.page.close()
+  await alice.page.close()
+  await bob.page.close()
+
+  // Only the viewer's lobby page is open (it never asks the server to finish a round).
+  // The server's own clock must resolve the duel: the deadline is 60 s after start, the sweep runs every minute.
+  await expect
+    .poll(async () => (await rawQuery(viewer.page, 'duels', {})).find((d) => d.recordId === duelId)!.data.status, {
+      timeout: 200_000,
+      intervals: [5_000],
+    })
+    .toBe('finished')
+  const duel = (await rawQuery(viewer.page, 'duels', {})).find((d) => d.recordId === duelId)!.data
+  expect(duel).toMatchObject({ endReason: 'timeout' })
+  expect(duel.winnerId).toBeTruthy() // Bob: 3 tests beat 1
 })

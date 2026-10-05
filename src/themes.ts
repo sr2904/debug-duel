@@ -18,6 +18,11 @@
 
 export const THEMES = [
   {
+    id: 'arena',
+    label: 'Arena',
+    description: 'Debug Duel: dark terminal arena, lime accent, cyan and magenta players.',
+  },
+  {
     id: 'slate',
     label: 'Slate',
     description: 'Neutral dark placeholder default. Replace with your own theme.',

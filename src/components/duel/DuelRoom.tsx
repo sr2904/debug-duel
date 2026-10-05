@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { useAuth, usePresenceRoom, useQuery, useUserLookup } from 'deepspace'
 import { Badge } from '@/components/ui'
 import { callAction } from '@/lib/duel/api'
+import { slotOf } from '@/lib/duel/slots'
 import type { Activity } from '@/lib/duel/types'
 import { useServerClock } from '@/lib/duel/useServerClock'
 import type { DuelData, EntryData, SubmissionData } from '../../shared/duel-types'
@@ -20,7 +21,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
  */
 export function DuelRoom({ duelId }: { duelId: string }) {
   const { userId } = useAuth()
-  const { getName } = useUserLookup()
+  const { getName, getUser } = useUserLookup()
   const duels = useQuery<DuelData>('duels')
   const entries = useQuery<EntryData>('entries', { where: { duelId } })
   const submissions = useQuery<SubmissionData>('submissions', { where: { duelId } })
@@ -51,9 +52,13 @@ export function DuelRoom({ duelId }: { duelId: string }) {
   const people: Person[] = useMemo(() => {
     const roleOf = (id: string): Person['role'] =>
       duel && (duel.p1Id === id || duel.p2Id === id) ? 'player' : duel?.hostId === id ? 'host' : 'spectator'
-    const others = presence.peers.map((p) => ({ userId: p.userId, name: p.userName || 'Guest', role: roleOf(p.userId), isYou: false }))
-    return [{ userId: me, name: getName(me) ?? 'You', role: roleOf(me), isYou: true }, ...others]
-  }, [presence.peers, duel, me, getName])
+    const slotFor = (id: string) => (duel ? slotOf(duel, id) : null)
+    const others: Person[] = presence.peers.map((p) => ({
+      userId: p.userId, name: p.userName || 'Guest', role: roleOf(p.userId), slot: slotFor(p.userId), imageUrl: getUser(p.userId)?.imageUrl, isYou: false,
+    }))
+    const self: Person = { userId: me, name: getName(me) ?? 'You', role: roleOf(me), slot: slotFor(me), imageUrl: getUser(me)?.imageUrl, isYou: true }
+    return [self, ...others]
+  }, [presence.peers, duel, me, getName, getUser])
 
   // When the deadline passes, whoever notices first asks the server to close the round.
   // The server re-checks its own clock, so a client with a wrong clock can't end it early.
@@ -71,16 +76,15 @@ export function DuelRoom({ duelId }: { duelId: string }) {
     return () => clearInterval(timer)
   }, [duel?.status, duel?.endsAt, clock, duelId])
 
-  // After the round, the host (or a player, if the host is gone) asks for the AI commentary.
-  // The server only generates it once, so extra calls are harmless.
+  // Whoever opens a finished duel with pending commentary asks for it (host first, others after a
+  // pause). The server only generates it once, so extra calls are harmless.
   const askedForCommentary = useRef(false)
   useEffect(() => {
     if (duel?.status !== 'finished' || duel.commentaryStatus !== 'pending' || askedForCommentary.current) return
-    if (!isHost && !isPlayer) return
     askedForCommentary.current = true
-    const timer = setTimeout(() => void callAction('generateCommentary', { duelId }), isHost ? 0 : 4000)
+    const timer = setTimeout(() => void callAction('generateCommentary', { duelId }), isHost ? 0 : 3000 + Math.random() * 3000)
     return () => clearTimeout(timer)
-  }, [duel?.status, duel?.commentaryStatus, isHost, isPlayer, duelId])
+  }, [duel?.status, duel?.commentaryStatus, isHost, duelId])
 
   if (duels.status === 'loading') {
     return <p className="p-8 text-center text-muted-foreground">Loading duel…</p>
@@ -95,16 +99,16 @@ export function DuelRoom({ duelId }: { duelId: string }) {
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-4 p-4 sm:p-6" data-testid="duel-room" data-status={duel.status}>
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 sm:p-6" data-testid="duel-room" data-status={duel.status}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           {isHost && <Badge variant="warning" data-testid="role-host">Host</Badge>}
-          <Badge variant={isPlayer ? 'info' : 'secondary'} data-testid="role-badge">{isPlayer ? 'Player' : 'Spectator'}</Badge>
+          <Badge variant={isPlayer ? 'info' : 'secondary'} className="font-mono uppercase tracking-wider" data-testid="role-badge">{isPlayer ? 'Player' : 'Spectator'}</Badge>
         </div>
         <PeopleBar people={people} />
       </div>
 
-      <div className="min-h-0 flex-1">
+      <div>
         {duel.status === 'lobby' && <LobbyView duelId={duelId} duel={duel} userId={me} isHost={isHost} nameOf={nameOf} />}
         {duel.status === 'running' && (
           <ArenaView

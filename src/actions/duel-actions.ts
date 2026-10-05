@@ -8,9 +8,11 @@
 
 import type { ActionHandler, ActionResult, ActionTools } from 'deepspace/worker'
 import type { Env } from '../../worker'
-import type { DuelData, EndReason, EntryData, SubmissionData } from '../shared/duel-types'
+import type { DuelData, EntryData, SubmissionData } from '../shared/duel-types'
 import { writeCommentary } from '../server/commentary'
-import { SUBMIT_GRACE_MS, clampDuration, winnerByScore } from '../shared/duel-rules'
+import { buildCommentaryInput } from '../server/commentary-input'
+import { SUBMIT_GRACE_MS, clampDuration } from '../shared/duel-rules'
+import { actionStore, finishDuel } from '../server/duel-finish'
 import { getSeedPuzzle, pickRandomPuzzle } from '../server/puzzles/seed-puzzles'
 
 type Handler = ActionHandler<Env>
@@ -30,29 +32,10 @@ async function loadDuel(tools: ActionTools, duelId: unknown): Promise<{ duel: Du
   return { duel: res.data.record.data }
 }
 
+/** All recorded runs for a duel, oldest first. Sorted here because tools.query defaults to newest-first. */
 async function loadSubmissions(tools: ActionTools, duelId: string): Promise<SubmissionData[]> {
-  const res = await tools.query<SubmissionData>('submissions', { where: { duelId }, orderBy: 'createdAt', limit: 500 })
-  return res.success ? res.data.records.map((r) => r.data) : []
-}
-
-/** Close the round, record the winner, and queue the AI commentary. */
-async function finishDuel(
-  tools: ActionTools,
-  duelId: string,
-  duel: DuelData,
-  reason: EndReason,
-  solvedBy?: string,
-) {
-  const submissions = await loadSubmissions(tools, duelId)
-  const players = [duel.p1Id, duel.p2Id].filter((id): id is string => !!id)
-  const winnerId = solvedBy ?? winnerByScore(submissions, players)
-  return tools.update('duels', duelId, {
-    status: 'finished',
-    finishedAt: Date.now(),
-    endReason: reason,
-    winnerId,
-    commentaryStatus: 'pending',
-  })
+  const res = await tools.query<SubmissionData>('submissions', { where: { duelId }, limit: 500 })
+  return res.success ? res.data.records.map((r) => r.data).sort((x, y) => x.at - y.at) : []
 }
 
 export const duelActions: Record<string, Handler> = {
@@ -159,7 +142,7 @@ export const duelActions: Record<string, Handler> = {
 
     const now = Date.now()
     if (now > (duel.endsAt ?? 0) + SUBMIT_GRACE_MS) {
-      await finishDuel(tools, duelId, duel, 'timeout')
+      await finishDuel(actionStore(tools), duelId, 'timeout')
       return fail('Time is up')
     }
 
@@ -174,7 +157,7 @@ export const duelActions: Record<string, Handler> = {
     if (!saved.success) return fail(saved.error)
 
     const solved = passedCount === total
-    if (solved) await finishDuel(tools, duelId, duel, 'solved', userId)
+    if (solved) await finishDuel(actionStore(tools), duelId, 'solved', userId)
     return ok({ solved })
   },
 
@@ -194,58 +177,42 @@ export const duelActions: Record<string, Handler> = {
     const expired = Date.now() >= (duel.endsAt ?? Infinity)
     if (!expired && duel.hostId !== userId) return fail('Only the host can end the round early')
 
-    const res = await finishDuel(tools, duelId, duel, expired ? 'timeout' : 'host_ended')
-    return res.success ? ok({ alreadyFinished: false }) : fail(res.error)
+    await finishDuel(actionStore(tools), duelId, expired ? 'timeout' : 'host_ended')
+    return ok({ alreadyFinished: false })
   },
 
-  /** Writes the post-round AI commentary. If the AI call fails the result still stands. */
-  generateCommentary: async ({ userId, params, tools, env }) => {
+  /**
+   * Writes the post-round AI commentary. Anyone who opens a finished duel may ask:
+   * the sweep can close a round with nobody present, so the first visitor triggers it.
+   * It runs at most once per duel (pending -> running -> done/failed/none).
+   * If the AI call fails the result still stands.
+   */
+  generateCommentary: async ({ params, tools, env }) => {
     const loaded = await loadDuel(tools, params.duelId)
     if ('error' in loaded) return fail(loaded.error)
     const { duel } = loaded
     const duelId = params.duelId as string
 
-    if (duel.hostId !== userId && !isPlayer(duel, userId)) return fail('Not part of this duel')
     if (duel.status !== 'finished') return fail('The round is not finished')
     if (duel.commentaryStatus !== 'pending') return ok({ status: duel.commentaryStatus })
 
     await tools.update('duels', duelId, { commentaryStatus: 'running' })
     try {
-      const submissions = await loadSubmissions(tools, duelId)
       const puzzle = getSeedPuzzle(duel.puzzleId ?? '')
-      const ids = [duel.p1Id ?? '', duel.p2Id ?? '']
-      const summaries = await Promise.all(
-        ids.map(async (id, i) => {
-          const mine = submissions.filter((s) => s.userId === id)
-          // Last run is the player's final fix; "best" is what scores the round.
-          const last = mine[mine.length - 1]
-          const user = await tools.get('users', id)
-          const name = user.success ? String((user.data.record.data as { name?: string }).name ?? '') : ''
-          return {
-            name: name || `Player ${i + 1}`,
-            passed: last?.passed ?? 0,
-            total: duel.testCount ?? 0,
-            code: last?.code ?? '(never ran their tests)',
-            ran: mine.length > 0,
-          }
-        }),
-      )
-      if (!puzzle || !summaries.some((s) => s.ran)) {
+      const submissions = await loadSubmissions(tools, duelId)
+      const names: Record<string, string> = {}
+      for (const id of [duel.p1Id, duel.p2Id]) {
+        if (!id) continue
+        // Read only the display name; never pass a raw users row anywhere.
+        const user = await tools.get('users', id)
+        if (user.success) names[id] = String((user.data.record.data as { name?: string }).name ?? '')
+      }
+      const input = puzzle ? buildCommentaryInput({ duel, puzzle, submissions, names }) : null
+      if (!input) {
         await tools.update('duels', duelId, { commentaryStatus: 'none' })
         return ok({ status: 'none' })
       }
-
-      const winner = summaries[ids.indexOf(duel.winnerId ?? '')]
-      const outcome = winner
-        ? `${winner.name} won (${duel.endReason === 'solved' ? 'passed every test first' : 'had the better score when the round ended'}).`
-        : 'The round ended in a draw.'
-      const commentary = await writeCommentary(env, {
-        puzzleDescription: puzzle.description,
-        buggyCode: puzzle.buggyCode,
-        referenceFix: puzzle.referenceFix,
-        outcome,
-        players: [summaries[0], summaries[1]],
-      })
+      const commentary = await writeCommentary(env, input)
       await tools.update('duels', duelId, { commentary, commentaryStatus: 'done' })
       return ok({ status: 'done' })
     } catch (err) {

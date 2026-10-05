@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clampDuration, winnerByScore } from './duel-rules'
+import { clampDuration, isTestDuel, winnerByScore } from './duel-rules'
 
 const run = (userId: string, passed: number, at: number) => ({ userId, passed, at })
 
@@ -33,5 +33,13 @@ describe('clampDuration', () => {
     expect(clampDuration(999_999)).toBe(900)
     expect(clampDuration(undefined)).toBe(300)
     expect(clampDuration(Number.NaN)).toBe(300)
+  })
+})
+
+describe('isTestDuel', () => {
+  it('flags the titles Playwright creates and nothing else', () => {
+    expect(isTestDuel('__test-1700000000__ duel')).toBe(true)
+    expect(isTestDuel('Friday showdown')).toBe(false)
+    expect(isTestDuel('my __test- duel')).toBe(false)
   })
 })

@@ -186,3 +186,60 @@ DeepSpace's sandbox is **Anthropic's hosted code-execution tool, which Claude dr
 - **Test accounts:** `alice-1@` / `bob-1@deepspace.test` were already taken (test emails are global), so I created `alice-7k3@` / `bob-7k3@`. Accounts are named Host, Alice, Bob, Viewer; passwords live only in `~/.deepspace/test-accounts.json` (reveal with `npx deepspace test accounts list --reveal`).
 - **Gotcha for manual testing:** the app owner (sr2904) is pinned to the `admin` role, which can write any collection directly. Use the test accounts when you want to see what a normal member can and cannot do.
 - The scaffold's `reuseExistingServer: false` means `deepspace test run` needs its own port (`--port 5180`) while a dev server is running on 5173.
+
+
+---
+
+## Manual testing round 1 (2026-10-04): three bugs and a UI polish pass
+
+Shashwat ran the duel by hand: Host (7/7) beat Alice (6/7) and the winner screen appeared in both windows at the same moment. He found three bugs and asked for a UI polish pass.
+
+### BUG 1: Test data in the duel list (found by Shashwat in manual testing)
+- **Symptom:** "Recent duels" was full of `__test-...__ duel` entries from the Playwright runs.
+- **Cause:** the tests create real duels in the local dev database, and members cannot delete duels (by design), so tests cannot clean up after themselves without a delete backdoor.
+- **Fix:** the lobby list hides any duel whose title starts with `__test-` (`isTestDuel` in `src/shared/duel-rules.ts`, unit-tested). I chose hiding over a cleanup action on purpose: a "delete test duels" server action would be a privileged endpoint that exists only for tests. The list also filters *before* trimming to 30, so hidden rows can't push real ones out. A Playwright assertion creates a `__test-` duel and checks it never appears in the list.
+- **Production check (evidence, not assumption):** production has exactly one release (the Phase 0 hello-world, `rel_01M44S6EXV0WQ12K747H0G83ZG`). I fetched the live JavaScript bundle: it contains zero occurrences of `duels` and of `__test-`, so the duels collection does not even exist there. The Playwright config only ever targets `http://localhost:<port>`.
+
+### BUG 2: Rounds stuck as "running" (found by Shashwat in manual testing)
+- **Symptom:** several duels stayed "running" long after their timer expired.
+- **Cause:** a round was closed only by a connected browser asking the server to finish it. If everyone had left, nothing ever closed it.
+- **Fix: round completion is now server-authoritative.**
+  - `src/server/duel-finish.ts` holds the one implementation of "finish a round" behind a tiny `FinishStore` interface, used by both server actions and a new **scheduled sweep**.
+  - `src/cron.ts` registers `expire-duels` (every minute, runs in DeepSpace's per-app CronRoom as the app owner): it closes every running duel whose `endsAt` has passed, picking the winner by best score and recording `endReason: timeout`.
+  - `finishDuel` re-reads the duel right before writing and does nothing if it is no longer running, so the sweep, a client, and a winning submission can all race safely (a round already won by solving is never overwritten by the sweep).
+  - Clients still ask the server to finish the instant their countdown ends, so normally the sweep finds nothing.
+  - Follow-on change: because the sweep can finish a round with nobody present, **any** signed-in user opening a finished duel with pending commentary now triggers it (still generated at most once). This supersedes the Phase 5 note that only the host or a player could trigger it.
+- **Tests:** 7 unit tests (`duel-finish.test.ts`): expired round closed with the better score winning, not-yet-expired untouched, draw when nobody scored, lobby/finished duels untouched, safe to run twice, one failing duel does not stop the others, sweep cannot overwrite a solved round. Plus a Playwright test: a 60 s round where the host and both players **close their tabs**; only a spectator's lobby page stays open (it never asks to finish anything). The test polls the database over a raw socket until the duel is `finished` with `endReason: timeout`. The server log for that run shows only the test's own `joinDuel`/`startRound`/`submitResult` calls followed by `[cron] expire-duels ok`, with **no `finishRound` from any browser**: the sweep did it.
+- **Behavior to know:** a stuck round now resolves within about a minute of its deadline even with nobody connected (cron granularity is one minute).
+
+### BUG 3: AI commentary contradicted the result (found by Shashwat in manual testing)
+- **Symptom:** commentary said both players had the original `/[^a-z]/` regex, both scored 6/7, and Host won on a tiebreaker. In fact Host fixed it to `/[^a-z0-9]/`, passed 7/7, and won by passing every test first. The score cards on the same page were right.
+- **Root cause (confirmed in the SDK source):** `tools.query` returns rows **newest-first by default** (`orderDir` defaults to `"desc"`). I asked for `orderBy: 'createdAt'` without a direction and then took the **last** row as each player's "final" submission, which was actually their **oldest** run: the unfixed 6/7 code. So the model really was shown identical original code at 6/7 each, and "won on a tiebreaker" was its attempt to reconcile that with a winner. The page's score cards used a different, correct code path, hence the contradiction.
+- **Why my tests missed it:** each player ran their tests only once in the Playwright test, so first run = last run and the order did not matter. My mistake: I tested the happy path, not a player with several runs.
+- **Fix:**
+  - `src/server/commentary-input.ts` builds the model's input from recorded submissions only: each player's **best-scoring run** (code and score), run counts, the recorded winner and finish reason, and computed facts (`scoresTied`, `sameCode`, "unchanged from the original buggy code"). It never depends on row order, and `loadSubmissions` now sorts by the server timestamp itself.
+  - `src/server/commentary-prompt.ts` sends those as an authoritative FACTS block and a stricter system prompt: must not contradict the facts; never state or imply a score, tie, tiebreaker, winner, or reason that is not in them; only describe code differences visible in the code blocks.
+  - **A guard on the answer:** `findContradiction` rejects commentary that claims a tie when scores differ, claims identical code when it differs, or mentions a score nobody had. The model gets one retry with the reason; if it still contradicts the record we show no commentary ("not available") rather than a wrong one.
+- **Tests (13 unit tests, `commentary.test.ts`):** the reported case (Host 6/7 first run then 7/7 fixed, Alice 6/7 twice) gives the correct input whether rows arrive oldest-first, newest-first (the database default), or shuffled; each player's own code and the real scores, winner and reason appear in the prompt, with the fixed code only under the player who wrote it; the guard rejects the exact reported failure ("both scored 6/7... tiebreaker"). The main Playwright test now makes the winner run twice (partial, then perfect) and asserts the commentary never says tie/tiebreak/identical.
+- **Real run after the fix** (Host: unfixed run, then fix, 7/7; Alice: unfixed 1/7): the commentary said Host added the two leftover-element loops, Alice left the code untouched, and Host reached "a perfect 7 of 7 while Alice struggled at just 1 of 7". It matches the score cards.
+
+### UI polish ("terminal arena")
+- **Theme:** new `arena` theme (near-black, high-contrast). One bold accent, electric lime, for calls to action, the headline, and labels. Fixed player colors: **Player 1 cyan, Player 2 magenta** (`--color-p1/p2`), used for the player's name, editor border/glow, status dot, progress bar, avatar ring, and in the lobby cards and winner screen. Monospace for headings, code and the timer; the clean system sans for body text. No new fonts or libraries (system font stacks, so nothing to load or block).
+- **Lobby (`/home`):** punchy hero ("Two devs. One bug. First to green wins."), a clear **Create duel** button, and compact duel cards: "ALICE vs BOB" in player colors, status (LIVE pulses), and the winner once finished.
+- **Duel room:** puzzle panel on top; **VS layout**: player 1 | big timer + VS | player 2. Each editor has the player's name and live status (Typing / Running tests / Idle / All tests passing), an "X of Y passing" line and a progress bar. A soft pulse ring appears in the player's color while their tests run. The timer turns **red and glows in the last 15 seconds**. Spectator count plus avatars (ringed in player colors; the host is ringed in the accent color).
+- **Winner screen:** the winner's name huge and glowing in their color, round time, both final scores with bars and run counts, then the commentary. A short fade-and-scale entrance (skipped when the browser asks for reduced motion).
+- **Mobile:** the arena stacks (timer first, then your own editor, then the opponent; spectators see player 1 then player 2), editors stay readable, and the winner screen fits a phone.
+- **Not changed:** game logic. All new work in this section is presentation, plus the three bug fixes above.
+- **Doc vs. SDK mismatch found:** the realtime docs list `userImageUrl` on presence peers, but the installed deepspace 0.35.0 typings have no such field. The installed typings are authoritative, so avatars are looked up from the user directory (`useUserLookup().getUser`) instead.
+- **Mistakes caught while reviewing my own screenshots:** the urgent timer faded to a dull dark red on its pulse's dim phase (now solid red with a glow and a scale pulse); the two lobby player cards were different heights (now aligned). Screenshots are in `docs/screenshots/`.
+
+### Verification
+- `tsc --noEmit` clean; ESLint 0 errors, 0 warnings.
+- Unit tests: **49 passing** (seed puzzles, winner/duration/test-title rules, round expiry, commentary input/prompt/guard).
+- Playwright: **16 passing**, including 5 duel specs: full path; server role checks; raw-WebSocket permission attempts; timeout at the deadline (with the red-timer assertion); expiry with nobody connected.
+
+### For Shashwat to verify (re-test the three fixes by hand)
+- [ ] **Bug 1:** open `/home`: no `__test-` duels are listed. (They still exist locally by design; production has none.)
+- [ ] **Bug 2:** create a **1 minute** duel, get two players in, start it, then close **every** browser tab (host and players). Wait about 2 minutes and open `/home` in a fresh tab: the duel shows **Finished** with a winner (or **Draw** if nobody ran tests). Needs the dev server running the whole time.
+- [ ] **Bug 3:** play a round where a player runs their **unfixed** code first, then fixes it and passes 7/7, while the other stays at a lower score. The commentary should match the cards: right winner, right scores, no tie or tiebreaker, and the winner's described fix is the one they actually submitted last.
+- [ ] Look at the lobby, the room as a player, as a spectator, on a phone-width window (browser devtools, about 390 px wide), and the winner screen.

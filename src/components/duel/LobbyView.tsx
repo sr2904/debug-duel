@@ -1,7 +1,9 @@
 import { useState } from 'react'
 import { Copy } from 'lucide-react'
-import { Badge, Button, useToast } from '@/components/ui'
+import { Button, useToast } from '@/components/ui'
 import { callAction } from '@/lib/duel/api'
+import { SLOT_STYLE, type Slot } from '@/lib/duel/slots'
+import { cn } from '@/lib/utils'
 import type { DuelData } from '../../shared/duel-types'
 
 interface LobbyViewProps {
@@ -19,6 +21,7 @@ export function LobbyView({ duelId, duel, userId, isHost, nameOf }: LobbyViewPro
   const link = `${window.location.origin}/duel/${duelId}`
   const isPlayer = duel.p1Id === userId || duel.p2Id === userId
   const slotsFull = !!duel.p1Id && !!duel.p2Id
+  const minutes = Math.round(duel.durationSec / 60)
 
   async function act(kind: 'join' | 'start') {
     setBusy(kind)
@@ -36,45 +39,51 @@ export function LobbyView({ duelId, duel, userId, isHost, nameOf }: LobbyViewPro
     }
   }
 
-  const slots = [
-    { label: 'Player 1', id: duel.p1Id },
-    { label: 'Player 2', id: duel.p2Id },
-  ]
+  const slotCard = (slot: Slot, id: string | undefined) => {
+    const style = SLOT_STYLE[slot]
+    return (
+      <div className={cn('min-h-28 rounded-lg border-2 bg-card p-5', style.border, id && style.glow)} data-testid="player-slot">
+        <p className={cn('font-mono text-[10px] uppercase tracking-[0.3em]', style.text)}>{style.label}</p>
+        <p className={cn('mt-2 truncate font-mono text-2xl font-black uppercase', id ? style.text : 'text-muted-foreground/60')}>
+          {id ? nameOf(id) : 'Waiting…'}
+        </p>
+        {id === userId && <p className="mt-1 font-mono text-xs uppercase tracking-wider text-muted-foreground">That&apos;s you</p>}
+      </div>
+    )
+  }
 
   return (
-    <div className="mx-auto flex max-w-2xl flex-col gap-6" data-testid="lobby">
+    <div className="mx-auto flex max-w-3xl flex-col gap-6" data-testid="lobby">
       <div>
-        <h1 className="text-2xl font-semibold" data-testid="duel-title">{duel.title}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Two players race to fix the same buggy function in {Math.round(duel.durationSec / 60)} {duel.durationSec === 60 ? 'minute' : 'minutes'}. Everyone else watches live as a spectator.
+        <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-primary">Lobby</p>
+        <h1 className="mt-1 font-mono text-3xl font-black tracking-tight" data-testid="duel-title">{duel.title}</h1>
+        <p className="mt-2 text-muted-foreground">
+          Two players race to fix the same buggy function in {minutes} {minutes === 1 ? 'minute' : 'minutes'}. Everyone else watches live as a spectator.
         </p>
       </div>
 
+      <div className="grid items-stretch gap-3 sm:grid-cols-[1fr_auto_1fr]">
+        {slotCard(1, duel.p1Id)}
+        <span className="self-center text-center font-mono text-2xl font-black" aria-hidden>
+          <span className="text-p1">V</span>
+          <span className="text-p2">S</span>
+        </span>
+        {slotCard(2, duel.p2Id)}
+      </div>
+
       <div className="rounded-lg border border-border bg-card p-4">
-        <p className="mb-2 text-sm font-medium">Share this link</p>
+        <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">Invite link</p>
         <div className="flex items-center gap-2">
-          <code className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-2 text-xs" data-testid="duel-link">{link}</code>
+          <code className="min-w-0 flex-1 truncate rounded bg-background px-3 py-2 font-mono text-xs" data-testid="duel-link">{link}</code>
           <Button variant="outline" size="sm" onClick={copyLink}>
             <Copy /> Copy
           </Button>
         </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        {slots.map((slot) => (
-          <div key={slot.label} className="rounded-lg border border-border bg-card p-4" data-testid="player-slot">
-            <p className="text-xs uppercase tracking-wide text-muted-foreground">{slot.label}</p>
-            <p className="mt-1 font-medium">
-              {slot.id ? nameOf(slot.id) : <span className="text-muted-foreground">Waiting for a player…</span>}
-            </p>
-            {slot.id === userId && <Badge className="mt-2" variant="outline">You</Badge>}
-          </div>
-        ))}
-      </div>
-
       <div className="flex flex-wrap items-center gap-3">
         {!isPlayer && !slotsFull && (
-          <Button onClick={() => act('join')} loading={busy === 'join'} data-testid="join-player-btn">
+          <Button size="lg" onClick={() => act('join')} loading={busy === 'join'} data-testid="join-player-btn">
             Join as a player
           </Button>
         )}
@@ -84,12 +93,7 @@ export function LobbyView({ duelId, duel, userId, isHost, nameOf }: LobbyViewPro
           </p>
         )}
         {isHost && (
-          <Button
-            onClick={() => act('start')}
-            loading={busy === 'start'}
-            disabled={!slotsFull}
-            data-testid="start-round-btn"
-          >
+          <Button size="lg" onClick={() => act('start')} loading={busy === 'start'} disabled={!slotsFull} data-testid="start-round-btn">
             Start the round
           </Button>
         )}

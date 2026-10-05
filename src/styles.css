@@ -39,6 +39,13 @@
   --color-ring: #818cf8;
   --radius: 0.5rem;
 
+  /* Debug Duel player colors (same in every theme). */
+  --color-p1: #22d3ee;
+  --color-p2: #ff3dcb;
+
+  /* Monospace for headings, code and the timer; the body keeps the clean system sans. */
+  --font-mono: ui-monospace, 'JetBrains Mono', 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
   /*
    * Map the rounded-* utilities onto --radius so a theme (or you) can change
    * the app's shape language in one place. At the default 0.5rem these equal
@@ -231,4 +238,24 @@
   a, button, [role="button"], input, select, textarea {
     touch-action: manipulation;
   }
+}
+
+/* Winner screen entrance: a short fade-and-scale. Skipped for people who prefer reduced motion. */
+@keyframes arena-pop {
+  from { opacity: 0; transform: scale(0.94); }
+  to { opacity: 1; transform: scale(1); }
+}
+.arena-pop { animation: arena-pop 450ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+@media (prefers-reduced-motion: reduce) {
+  .arena-pop { animation: none; }
+}
+
+/* Last seconds of a round: a slow scale pulse (no fading, so the red stays high-contrast). */
+@keyframes urgent-pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.06); }
+}
+.urgent-pulse { animation: urgent-pulse 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .urgent-pulse { animation: none; }
 }

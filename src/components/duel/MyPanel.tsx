@@ -3,6 +3,7 @@ import { useMutations } from 'deepspace'
 import { Button, useToast } from '@/components/ui'
 import { callAction } from '@/lib/duel/api'
 import { runTestsInWorker } from '@/lib/duel/runTests'
+import type { Slot } from '@/lib/duel/slots'
 import type { Activity } from '@/lib/duel/types'
 import type { EntryData, TestCase, TestOutcome } from '../../shared/duel-types'
 import { CodeBox } from './CodeBox'
@@ -14,6 +15,7 @@ const IDLE_AFTER_MS = 1500
 interface MyPanelProps {
   duelId: string
   entryId: string
+  slot: Slot
   /** The code stored for this player (used to seed the editor, e.g. after a reload). */
   savedCode: string
   setActivity: (a: Activity) => void
@@ -24,7 +26,7 @@ interface MyPanelProps {
  * moment after typing stops, which is how the opponent and spectators watch live.
  * The permission system only lets the owner of the row write to it.
  */
-export function MyPanel({ duelId, entryId, savedCode, setActivity }: MyPanelProps) {
+export function MyPanel({ duelId, entryId, slot, savedCode, setActivity }: MyPanelProps) {
   const { put, ready } = useMutations<EntryData>('entries')
   const { error: showError } = useToast()
   const [code, setCode] = useState(savedCode)
@@ -82,14 +84,12 @@ export function MyPanel({ duelId, entryId, savedCode, setActivity }: MyPanelProp
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <div className="min-h-64 flex-1">
-        <CodeBox value={code} onChange={handleChange} testId="my-editor" />
-      </div>
-      <div className="flex items-center gap-3">
+      <CodeBox value={code} onChange={handleChange} testId="my-editor" slot={slot} />
+      <div className="flex flex-wrap items-center gap-3">
         <Button onClick={runTests} loading={running} disabled={!ready} data-testid="run-tests-btn">
           Run tests
         </Button>
-        <span className="text-xs text-muted-foreground">Tests are hidden. You see pass or fail for each.</span>
+        <span className="text-xs text-muted-foreground">Tests are hidden: you see pass or fail for each.</span>
       </div>
       {outcomes && <TestResults outcomes={outcomes} />}
     </div>

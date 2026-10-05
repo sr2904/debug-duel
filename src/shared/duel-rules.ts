@@ -7,6 +7,10 @@ import type { SubmissionData } from './duel-types'
 /** How long after the deadline a test run is still accepted (network + test run time). */
 export const SUBMIT_GRACE_MS = 3000
 
+/** Playwright titles every duel it creates with this prefix; the lobby list hides them. */
+export const TEST_TITLE_PREFIX = '__test-'
+export const isTestDuel = (title: string) => title.startsWith(TEST_TITLE_PREFIX)
+
 /** Round length limits, in seconds. The host picks within these when creating a duel. */
 export const MIN_DURATION_SEC = 60
 export const MAX_DURATION_SEC = 900
@@ -20,8 +24,8 @@ export function clampDuration(sec: unknown): number {
 type Scored = Pick<SubmissionData, 'userId' | 'passed' | 'at'>
 
 /** Best run per player: most tests passed; if tied, the one the server received first. */
-export function bestRuns(submissions: Scored[]): Map<string, Scored> {
-  const best = new Map<string, Scored>()
+export function bestRuns<T extends Scored>(submissions: T[]): Map<string, T> {
+  const best = new Map<string, T>()
   for (const s of submissions) {
     const current = best.get(s.userId)
     if (!current || s.passed > current.passed || (s.passed === current.passed && s.at < current.at)) {

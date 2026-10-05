@@ -44,3 +44,33 @@
   --color-shell: #fafafa;
   --color-shell-panel: #ffffff;
 }
+
+/* Arena: the Debug Duel look. Near-black "terminal" ground, high-contrast text,
+ * one electric-lime accent (primary) for calls to action and the winner. Player
+ * colors (--color-p1 cyan, --color-p2 magenta) live in styles.css and are used
+ * for each player's editor border, name, status, score bar and avatar ring. */
+[data-theme="arena"] {
+  color-scheme: dark;
+  --color-background: #06080c;
+  --color-foreground: #eef3f8;
+  --color-card: #0c1118;
+  --color-card-foreground: #eef3f8;
+  --color-popover: #0c1118;
+  --color-popover-foreground: #eef3f8;
+  --color-primary: #c6ff3d;
+  --color-primary-foreground: #06080c;
+  --color-secondary: #151c27;
+  --color-secondary-foreground: #eef3f8;
+  --color-muted: #121923;
+  --color-muted-foreground: #93a1b3;
+  --color-accent: #1a2330;
+  --color-accent-foreground: #eef3f8;
+  --color-destructive: #ff4d5e;
+  --color-destructive-foreground: #ffffff;
+  --color-border: rgba(130, 150, 180, 0.22);
+  --color-input: rgba(130, 150, 180, 0.3);
+  --color-ring: #c6ff3d;
+  --radius: 0.375rem;
+  --color-shell: #06080c;
+  --color-shell-panel: #0c1118;
+}
