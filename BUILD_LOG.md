@@ -9,6 +9,21 @@ A live 1v1 debugging battle on DeepSpace. Each phase records what was built, the
 
 ---
 
+## Scope change (2026-10-04, before Phase 2)
+
+The deadline plan changed to "finish in 2-3 hours", so scope was cut deliberately:
+
+| Cut | Why | What replaces it |
+| --- | --- | --- |
+| **Phase 1 sandbox spike (skipped)** | DeepSpace's sandbox is Anthropic's code-execution tool *driven by Claude*: every test run would be an LLM round trip (seconds), cost credits, and expose a prompt-injection surface (player code could address the model). Poor fit for a rapid "Run tests" loop. I did not measure it; this is a decision from the docs, not from a benchmark. | Tests run **in the browser, in a Web Worker with a 3 s timeout**. |
+| **AI puzzle generation (cut)** | Needs the generate-then-validate loop plus fallbacks; not core to the race. | **5 hand-written seed puzzles**, each proven by a unit test (buggy version fails >= 1 test, reference fix passes all). |
+| **AI commentary (kept)** | Cheap, isolated, and the result screen works without it. | If the AI call fails, the result is shown without commentary. |
+
+**Main trade-off:** because tests run on the player's machine, **a determined player could fake a pass** (the browser reports "passed 7/7"). Acceptable for a friendly event tool. The server still validates and timestamps every submission (right puzzle, right test count, player-only, round running), so the *ordering* and the *clock* are server-authoritative even though the *score* is client-reported.
+**What I'd do next:** re-run the winning submission's code server-side (e.g. via the Anthropic sandbox, once, only for the winner, with the output parsed from a results file rather than trusting prose) and only then confirm the win.
+
+---
+
 ## Phase 0: Setup and hello-world deploy (2026-10-04)
 
 ### What was built
@@ -44,3 +59,130 @@ DeepSpace's sandbox is **Anthropic's hosted code-execution tool, which Claude dr
 - [ ] `npx deepspace app source --json` shows GitHub `sr2904/debug-duel`.
 - [ ] `git ls-files | grep -E 'dev.vars|\.deepspace'` prints nothing.
 - [ ] https://github.com/sr2904/debug-duel shows the code and this log.
+
+
+---
+
+## Phase 2: Data model, permissions, lobby
+
+### What was built
+- `src/schemas/duel-schemas.ts`: three collections.
+  - **`duels`**: one row per duel (title, host, status `lobby|running|finished`, the two player slots, server clock fields, winner, commentary).
+  - **`entries`**: each player's live code.
+  - **`submissions`**: every accepted test run (passed/total, code, server timestamp).
+- `src/pages/(app)/(protected)/home.tsx`: the lobby (create a duel with a title and round length, list recent duels). `/duel/:id` is the shareable link. Both pages are sign-in gated.
+- Server actions (`src/actions/duel-actions.ts`): `joinDuel`, `startRound`, `serverTime` (more in later phases).
+
+### Roles: where each is enforced
+| Role | How it is decided | Enforced by |
+| --- | --- | --- |
+| **Host** | `duels.hostId`, stamped by the server from the caller's JWT (`userBound` + `immutable`) | `startRound` / `finishRound` re-check `hostId` against the caller |
+| **Player** | `duels.p1Id` / `p2Id`, set only by `joinDuel` | `entries` rows are `update: 'own'` + `writableFields: ['code']` (DO-enforced); `getTests` / `submitResult` check the caller is a player |
+| **Spectator** | Anyone else | Read-only everywhere: `entries` update is `'own'`, `duels` / `submissions` have `update: false, create: false` for members |
+
+### Key decisions and why
+- **Clients may only create a duel (title + round length).** Everything after that (join, start, finish, winner, commentary) goes through server actions that re-load the duel and check the caller. `writableFields` blocks a client from supplying `winnerId`, `status`, `endsAt`, etc. even on create.
+- **Opening the link = spectator. "Join as a player" is an explicit button** (first two clicks get the slots). Chosen so the host can also play and so two browser windows are enough to test. Trade-off: a stranger could grab a slot before the intended opponent; fine for a friendly event, noted for the writeup.
+- **Hidden tests never ship in the page bundle.** Puzzles live under `src/server/` (worker only); the browser gets the buggy code and description from the duel row, and the tests only through the `getTests` action (players only, round running). I grepped the built client bundle: no test names or reference fixes in it.
+- **Single shared room (`app:<id>`) for all collections**, filtered by `duelId`. Simplest thing that works at this scale.
+- **Round length is host-chosen (1 / 3 / 5 / 10 min), clamped to 60-900 s on the server.** Added late so the timeout path can be tested end to end with a real 60 s round.
+
+### For Shashwat to verify
+- [ ] Create a duel; the browser lands on `/duel/<id>` and shows a copyable link.
+- [ ] Open the link in a second window as a different account: you see the lobby as a spectator with a "Join as a player" button.
+- [ ] Two accounts join; a third account sees "Both player slots are taken...spectator".
+- [ ] Only the host sees "Start the round" (disabled until two players have joined).
+
+---
+
+## Phase 3: The live duel room
+
+### What was built
+- `DuelRoom` picks a view from the server-side status: `LobbyView` -> `ArenaView` -> `ResultView`.
+- **Two editors with live sync:** a player edits locally and autosaves to their `entries` row 300 ms after typing stops (debounced `useMutations().put`); everyone else sees that row update over the records WebSocket. Spectators see both editors read-only; the opponent sees yours read-only.
+- **Presence** (`usePresenceRoom('duel:<id>')`): who is in the room (host / player / spectator, spectator count) and each player's "Typing" / "Running tests" status.
+- **Server-authoritative timer:** `startRound` writes `startedAt`/`endsAt` with the worker's `Date.now()`. Each browser measures its offset from the server clock (`useServerClock`) so all screens agree even if a laptop clock is wrong. When the countdown hits zero, any client asks the server to finish the round; the server re-checks its own clock.
+- Server-side pieces: `startRound` copies the buggy code into both entries *before* flipping the duel to `running`, so nobody sees a running round with an empty editor.
+
+### Key decisions and why
+- **Plain `<textarea>` editors**, not Monaco/CodeMirror: smallest thing that is readable in an interview and keeps the bundle small. Trade-off: no syntax highlighting.
+- **Records, not Yjs, for code sync.** Whole-buffer last-write-wins is fine because only one person ever writes a given editor, so there are no conflicting edits to merge.
+- **Presence is display-only.** "Typing / Running tests" come from the presence room (self-reported, ephemeral). "Passed all tests" and scores come from server-recorded submissions only.
+- **Anyone can close an expired round**, not just the host, so a host who closes the tab cannot strand the room. Before the deadline only the host can end it.
+
+### For Shashwat to verify
+- [ ] After "Start", all windows switch to the arena at the same moment and show the same puzzle and (within ~1-2 s) the same countdown.
+- [ ] Typing in a player's editor appears in the opponent's and spectator's windows within about a second.
+- [ ] The spectator cannot type in either editor; a player cannot type in the opponent's.
+- [ ] The people bar shows everyone in the room and updates when someone opens/closes the link.
+- [ ] Status badge shows "Typing" while a player types.
+
+---
+
+## Phase 4: Running tests and winning
+
+### What was built
+- **Web Worker test runner** (`src/lib/duel/runTests.ts`, `test-worker.ts`): runs player code against the hidden tests off the main thread. Results stream back one by one; if the worker has not finished in 3 s it is terminated and unfinished tests count as failed ("Timed out"), so a `while (true)` cannot freeze the page. Argument arrays are cloned per test so a mutating solution cannot corrupt later tests.
+- `submitResult` action: validates (player, round running, `total` equals the puzzle's test count, `0 <= passed <= total`), stamps the **server** time, stores the run, and if it passes everything ends the round with that player as winner.
+- `finishRound`: timeout / host-ended. Winner rule (`src/shared/duel-rules.ts`): most tests passed on a player's best run; equal scores go to whoever reached that score first (server timestamps); nobody passing anything is a draw.
+- `ResultView`: winner screen shown to everyone when the duel row flips to `finished` (one broadcast, so all screens change together).
+
+### Key decisions and why
+- **Best run, not last run, counts** at timeout, so breaking your own code in the last second does not lose the round.
+- **Pure rules in `src/shared/`** with unit tests (`duel-rules.test.ts`), so the winner logic is readable and testable without a server.
+- **Test results are shown per test (name + pass/fail), never inputs or expected values.**
+
+### Known limitations (honest list)
+- The pass count is computed in the browser (see Scope change).
+- `finishDuel` is read-then-write: two players passing in the same few milliseconds could race; first writer wins. Not guarded because the window is tiny.
+- Hidden tests do reach a player's browser (via `getTests`) while the round runs, so a player *could* read them in devtools. They are hidden from the UI and from spectators, not from a determined player.
+- A player can still edit their editor row after the round ends. It does not matter for results (judging uses recorded submissions), but the displayed code could change.
+
+### For Shashwat to verify
+- [ ] "Run tests" on unfixed code: a partial score (e.g. 1 of 7) with per-test pass/fail.
+- [ ] Paste `while(true){}` at the top of your function and run: after ~3 s you get "Timed out (infinite loop?)" and the page stays responsive.
+- [ ] Fix the bug and run: winner screen appears for **all** windows at once, naming you.
+- [ ] With a 1-minute round and nobody solving it: at 0:00 every window shows the winner screen; the player with the better best score wins.
+- [ ] Host can press "End round" early; spectators cannot (no button).
+
+---
+
+## Phase 5: AI commentary (puzzle generation cut)
+
+### What was built
+- `src/server/commentary.ts`: after the round, the worker asks Claude Haiku 4.5 (via `createDeepSpaceAI`, no API key in the repo) for a <= 120-word comparison of the two final solutions.
+- `generateCommentary` action: host (or a player after 4 s, if the host is gone) triggers it; the duel's `commentaryStatus` moves `pending -> running -> done | failed | none`, so it only runs once.
+- `ResultView` shows the text, "Writing commentary...", or "Commentary is not available" and never blocks the result.
+
+### Key decisions and why
+- **Owner-billed** (the app owner's credits), because friends opening a link should not need credits. Bounded: only runs for a *finished* duel, once, and only if at least one player ran tests.
+- **Commentary uses the players' last recorded submission code**, not the live editor row, so editing after the round cannot change it.
+- **Prompt hardening:** the system prompt says player code is untrusted data and must not be obeyed; output is rendered as plain text (React-escaped).
+- **Failure path:** any error (including a 25 s timeout) sets `failed`; a stale `running` state (> 60 s after the round) is shown as unavailable.
+
+### Mistake caught and fixed
+- The first real commentary said "*She* instantly spotted the bug": the model guessed a pronoun from a player's name. I changed the system prompt to use names or "they".
+
+### For Shashwat to verify
+- [ ] After a round, "Writing commentary..." appears, then a short paragraph comparing the two fixes.
+- [ ] The commentary describes what each player actually did (e.g. "Bob never changed the buggy code").
+- [ ] (Optional) Break the AI call, e.g. temporarily change the model id in `commentary.ts` to a bad value: the winner screen still shows, with "Commentary is not available".
+
+---
+
+## Testing done so far (Phases 2-5)
+
+- **Typecheck** (`tsc --noEmit`): clean. **ESLint** (run by the dev server): 0 errors, 0 warnings.
+- **Unit tests** (`npx vitest run`, 28 tests): all five seed puzzles validated (buggy fails >= 1 test, reference passes all, >= 5 uniquely named tests each) and the winner/duration rules.
+- **Playwright** (`tests/duel.spec.ts`, 4 real-browser tests using four test accounts):
+  1. Full path: host creates -> link -> two join as players, one stays a spectator (presence shows 4 people) -> start -> shared countdown within 2 s -> partial score -> live code visible to the spectator and opponent -> fix -> winner screen for all four -> commentary.
+  2. Server role checks via the actions (non-host cannot start/end; spectator cannot fetch tests or submit; impossible scores rejected; third joiner turned away).
+  3. **Raw WebSocket writes** that bypass the UI: a spectator and the opponent cannot edit another player's code; nobody can set `winnerId`/`status`/`endsAt` or forge a submission; a creator can only set title and round length; data verified unchanged afterwards.
+  4. Timeout: a 60 s round ends for all four screens at the deadline and the best score wins.
+- All 14 specs in the project (`npx deepspace test run e2e`) were green before the round-length feature; the 4 duel specs were re-run green after it.
+
+### Process notes
+- **Mistake:** my first `countWords` seed test expected the key `toString`, but the spec lowercases words, so the reference fix failed. I corrected the test, not the solution.
+- **Test accounts:** `alice-1@` / `bob-1@deepspace.test` were already taken (test emails are global), so I created `alice-7k3@` / `bob-7k3@`. Accounts are named Host, Alice, Bob, Viewer; passwords live only in `~/.deepspace/test-accounts.json` (reveal with `npx deepspace test accounts list --reveal`).
+- **Gotcha for manual testing:** the app owner (sr2904) is pinned to the `admin` role, which can write any collection directly. Use the test accounts when you want to see what a normal member can and cannot do.
+- The scaffold's `reuseExistingServer: false` means `deepspace test run` needs its own port (`--port 5180`) while a dev server is running on 5173.
